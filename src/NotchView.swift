@@ -37,8 +37,9 @@ final class NotchModel: ObservableObject {
 
     var collapsedSize: CGSize { CGSize(width: notchWidth + 2 * Self.wing, height: notchHeight) }
 
-    func openSize(rows: Int) -> CGSize {
-        let body = rows == 0 ? 64 : 20 + CGFloat(rows) * Self.rowHeight + 12
+    func openSize(rows: Int, footer: Bool = false) -> CGSize {
+        var body = rows == 0 ? 64 : 20 + CGFloat(rows) * Self.rowHeight + 12
+        if footer { body += 22 }
         return CGSize(width: max(Self.openWidth, notchWidth + 2 * Self.wing + 40), height: notchHeight + body)
     }
 }
@@ -81,7 +82,7 @@ struct NotchView: View {
     private var flashing: Bool { store.flash != nil && !model.open }
 
     private var size: CGSize {
-        if model.open { return model.openSize(rows: rows.count) }
+        if model.open { return model.openSize(rows: rows.count, footer: store.announcement != nil) }
         var s = model.collapsedSize
         if flashing { s.height += NotchModel.flashHeight; s.width = max(s.width, 360) }
         return s
@@ -173,6 +174,9 @@ struct NotchView: View {
                         }
                 }
             }
+            if let an = store.announcement {
+                Announced(item: an, now: store.now).frame(height: 22).padding(.horizontal, 16).offset(y: -4)
+            }
         }
     }
 
@@ -181,6 +185,29 @@ struct NotchView: View {
         guard let latest else { return "" }
         let s = store.now.timeIntervalSince(latest)
         return s < 60 ? "updated just now" : "updated \(Fmt.duration(s)) ago"
+    }
+}
+
+/// "OpenAI announced: Codex usage limits reset · 3h ago" — public resets, from resets.albastov.com.
+struct Announced: View {
+    let item: Announcement
+    let now: Date
+
+    var body: some View {
+        Button {
+            if let u = item.url.flatMap(URL.init(string:)) { NSWorkspace.shared.open(u) }
+        } label: {
+            HStack(spacing: 0) {
+                Circle().fill(Theme.accent).frame(width: 4, height: 4).frame(width: 13)
+                Text(item.summary).foregroundStyle(Theme.dim).lineLimit(1).padding(.leading, 8)
+                Spacer(minLength: 6)
+                Text("announced \(Fmt.duration(now.timeIntervalSince(item.at))) ago").font(Theme.num(10)).foregroundStyle(Theme.faint)
+            }
+            .font(Theme.ui(10.5))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("Announced in public. Opens the post.")
     }
 }
 

@@ -11,6 +11,8 @@ final class Store: ObservableObject {
     /// A line shown under the notch for a few seconds (alerts, sign-in results).
     @Published var flash: Flash?
     @Published var now = Date()
+    /// Latest publicly announced reset, if recent.
+    @Published var announcement: Announcement?
 
     private var fired: Set<String> = []
     private var timer: Timer?
@@ -120,6 +122,23 @@ final class Store: ObservableObject {
         JSON.save(Array(usage.values), Paths.usage)
         refreshing = false
         for a in newAlerts { fire(a) }
+        if settings.announcements { await checkAnnouncements(now: now) }
+    }
+
+    /// Picks up resets OpenAI / Anthropic announce in public, via resets.albastov.com.
+    func checkAnnouncements(now: Date) async {
+        guard let o = try? await HTTP.json(URLRequest(url: URL(string: "https://resets.albastov.com/api/resets?limit=5")!)) else { return }
+        let list = Announcement.parse(o).sorted { $0.at > $1.at }
+        announcement = list.first.flatMap { now.timeIntervalSince($0.at) < 48 * 3600 ? $0 : nil }
+        let firstRun = !fired.contains { $0.hasPrefix("ann:") }
+        for a in list where !fired.contains("ann:\(a.id)") {
+            // On the very first run just remember what's there; only new ones are news.
+            if firstRun || now.timeIntervalSince(a.at) > 6 * 3600 { fired.insert("ann:\(a.id)"); continue }
+            fire(Alert(kind: .announced, accountId: "", account: a.provider == .claude ? "Anthropic" : "OpenAI",
+                       provider: a.provider, window: nil, percent: nil, resetsAt: nil,
+                       title: a.summary, key: "ann:\(a.id)", at: now))
+        }
+        JSON.save(Array(fired), Paths.fired)
     }
 
     // MARK: alerts
@@ -225,7 +244,7 @@ struct Flash: Equatable {
         text = a.title
         provider = a.provider
         switch a.kind {
-        case .reset, .credits, .leftover: tone = .accent
+        case .reset, .credits, .leftover, .announced: tone = .accent
         case .threshold: tone = (a.percent ?? 0) >= 100 ? .bad : (a.percent ?? 0) >= 85 ? .warn : .accent
         case .auth: tone = .warn
         }

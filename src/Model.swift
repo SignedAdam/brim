@@ -112,6 +112,8 @@ struct Settings: Codable, Equatable {
     var pager: Bool = true
     /// Which display gets the notch: "auto" = the built-in one with a notch, else main.
     var display: String = "auto"
+    /// Watch resets.albastov.com for announced resets (OpenAI / Anthropic posting "limits reset").
+    var announcements: Bool = true
 
     init() {}
 
@@ -126,13 +128,14 @@ struct Settings: Codable, Equatable {
         hooks = (try? c.decode([String].self, forKey: .hooks)) ?? z.hooks
         pager = (try? c.decode(Bool.self, forKey: .pager)) ?? z.pager
         display = (try? c.decode(String.self, forKey: .display)) ?? z.display
+        announcements = (try? c.decode(Bool.self, forKey: .announcements)) ?? z.announcements
     }
 }
 
 // MARK: - Alerts
 
 struct Alert: Codable, Equatable {
-    enum Kind: String, Codable { case threshold, leftover, reset, credits, auth }
+    enum Kind: String, Codable { case threshold, leftover, reset, credits, auth, announced }
     var kind: Kind
     var accountId: String
     var account: String
@@ -306,5 +309,23 @@ func log(_ s: String) {
         h.seekToEndOfFile(); h.write(line.data(using: .utf8)!); try? h.close()
     } else {
         FileManager.default.createFile(atPath: Paths.log.path, contents: line.data(using: .utf8))
+    }
+}
+
+/// A reset announced in public (from resets.albastov.com).
+struct Announcement: Codable, Equatable, Identifiable {
+    var id: String
+    var provider: Provider
+    var summary: String
+    var url: String?
+    var at: Date
+
+    static func parse(_ o: [String: Any]) -> [Announcement] {
+        ((o["resets"] as? [[String: Any]]) ?? []).compactMap { r in
+            guard let id = r["id"] as? String, let s = r["summary"] as? String,
+                  let at = ((r["posted_at"] as? String) ?? (r["detected_at"] as? String)).flatMap(JSON.parseDate) else { return nil }
+            let p: Provider = (r["provider"] as? String) == "anthropic" ? .claude : .codex
+            return Announcement(id: id, provider: p, summary: s, url: r["source_url"] as? String, at: at)
+        }
     }
 }

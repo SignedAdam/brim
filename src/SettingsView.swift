@@ -66,6 +66,11 @@ struct SettingsView: View {
                                                      set: { store.settings.alertOnReset = $0; store.saveSettings() }))
                                 .toggleStyle(.switch).controlSize(.mini).labelsHidden()
                         }
+                        SettingRow(name: "Announced resets", hint: "when OpenAI or Anthropic reset limits in public") {
+                            Toggle("", isOn: Binding(get: { store.settings.announcements },
+                                                     set: { store.settings.announcements = $0; store.saveSettings() }))
+                                .toggleStyle(.switch).controlSize(.mini).labelsHidden()
+                        }
                         SettingRow(name: "Pager", hint: Store.pagerPath == nil ? "pager isn't installed" : "a line on the ambient stream") {
                             Toggle("", isOn: Binding(get: { store.settings.pager },
                                                      set: { store.settings.pager = $0; store.saveSettings() }))
