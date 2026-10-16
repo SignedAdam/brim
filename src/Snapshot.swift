@@ -22,7 +22,7 @@ enum Snapshot {
                 let model = NotchModel()
                 model.notchWidth = 186; model.notchHeight = 32
                 model.open = args.contains("--open")
-                let size = CGSize(width: 640, height: model.open ? 300 : 110)
+                let size = CGSize(width: 640, height: model.open ? 290 : 90)
                 let view = ZStack(alignment: .top) {
                     Desktop(menuHeight: model.notchHeight)
                     NotchView(store: store, model: model)
@@ -69,7 +69,7 @@ enum Snapshot {
             ("Studio", .claude, "default_claude_max_5x", 64, 3 * 3600 + 40 * 60, 48, 4.2 * 86400, nil),
             ("ChatGPT", .codex, "plus", 7, 8 * 60, 34, 5.3 * 86400, 2),
             ("Auernet", .claude, "claude_team", 88, 52 * 60, 71, 2.6 * 86400, nil),
-            ("Auernet", .codex, "business", 100, 37 * 60, 55, 3.1 * 86400, nil),
+            ("Auernet GPT", .codex, "business", 100, 37 * 60, 55, 3.1 * 86400, nil),
         ]
         for (i, r) in rows.enumerated() {
             let id = "sample-\(i)"

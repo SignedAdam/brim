@@ -6,7 +6,7 @@ import AppKit
 enum Theme {
     static let text = Color.white.opacity(0.92)
     static let dim = Color.white.opacity(0.56)
-    static let faint = Color.white.opacity(0.32)
+    static let faint = Color.white.opacity(0.4)
     static let track = Color.white.opacity(0.11)
     static let accent = Color(red: 0.80, green: 0.96, blue: 0.27)      // Pager lime
     static let warn = Color(red: 1.0, green: 0.70, blue: 0.25)
@@ -16,6 +16,8 @@ enum Theme {
     static func level(_ pct: Double) -> Color { pct >= 100 ? bad : pct >= 85 ? warn : text }
 
     static func mono(_ size: CGFloat, _ w: Font.Weight = .medium) -> Font { .system(size: size, weight: w, design: .monospaced) }
+    /// Numbers: SF with tabular digits, so columns line up without a mono texture.
+    static func num(_ size: CGFloat, _ w: Font.Weight = .medium) -> Font { .system(size: size, weight: w).monospacedDigit() }
     static func ui(_ size: CGFloat, _ w: Font.Weight = .medium) -> Font { .system(size: size, weight: w) }
 }
 
@@ -27,16 +29,16 @@ final class NotchModel: ObservableObject {
     @Published var notchHeight: CGFloat = 32
     @Published var hasNotch = true
 
-    static let wing: CGFloat = 52
-    static let topRadius: CGFloat = 6
-    static let openWidth: CGFloat = 468
+    static let wing: CGFloat = 60
+    static let topRadius: CGFloat = 8
+    static let openWidth: CGFloat = 404
     static let rowHeight: CGFloat = 34
     static let flashHeight: CGFloat = 26
 
     var collapsedSize: CGSize { CGSize(width: notchWidth + 2 * Self.wing, height: notchHeight) }
 
     func openSize(rows: Int) -> CGSize {
-        let body = rows == 0 ? 64 : 22 + CGFloat(rows) * Self.rowHeight + 10
+        let body = rows == 0 ? 64 : 20 + CGFloat(rows) * Self.rowHeight + 12
         return CGSize(width: max(Self.openWidth, notchWidth + 2 * Self.wing + 40), height: notchHeight + body)
     }
 }
@@ -114,11 +116,18 @@ struct NotchView: View {
         .environment(\.colorScheme, .dark)
     }
 
-    /// The band beside the camera: pips on the left, the next reset on the right.
+    /// The band beside the camera: a miniature of the panel on the left, the next reset on the right.
     private var header: some View {
         HStack(spacing: 0) {
-            Pips(store: store)
-                .padding(.leading, model.open ? 16 : 13)
+            Group {
+                if model.open {
+                    Text(updatedText).font(Theme.ui(10)).foregroundStyle(Theme.faint)
+                        .transition(.opacity.animation(.easeOut(duration: 0.15).delay(0.08)))
+                } else {
+                    Minis(store: store).transition(.opacity)
+                }
+            }
+            .padding(.leading, model.open ? 16 : 14)
             Spacer(minLength: model.notchWidth)
             Group {
                 if model.open {
@@ -135,7 +144,7 @@ struct NotchView: View {
                         .transition(.opacity)
                 }
             }
-            .padding(.trailing, model.open ? 12 : 13)
+            .padding(.trailing, model.open ? 10 : 14)
         }
         .frame(height: model.notchHeight)
     }
@@ -146,13 +155,12 @@ struct NotchView: View {
                 EmptyState(onAdd: onAdd).frame(height: 64)
             } else {
                 HStack(spacing: 0) {
-                    Text(updatedText).font(Theme.ui(9.5)).foregroundStyle(Theme.faint)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                    Spacer()
                     ColumnLabel("Session").frame(width: Row.meterWidth, alignment: .leading)
                     ColumnLabel("Week").frame(width: Row.meterWidth, alignment: .leading).padding(.leading, Row.gap)
                 }
                 .padding(.horizontal, 16)
-                .frame(height: 22, alignment: .bottom)
+                .frame(height: 20, alignment: .bottom)
                 ForEach(rows) { a in
                     Row(account: a, usage: store.usage[a.id], now: store.now)
                         .frame(height: NotchModel.rowHeight)
@@ -186,29 +194,31 @@ struct ColumnLabel: View {
 
 // MARK: - Collapsed pieces
 
-/// One slim bar per account: how close it is to its tightest limit.
-struct Pips: View {
+/// The panel in miniature: one hairline per account, as full as its tightest limit.
+struct Minis: View {
     @ObservedObject var store: Store
 
     var body: some View {
-        HStack(alignment: .bottom, spacing: 3) {
-            ForEach(store.visible.prefix(8)) { a in
+        let list = Array(store.visible.prefix(6))
+        let h: CGFloat = list.count > 4 ? 1.5 : 2
+        let gap: CGFloat = list.count > 4 ? 2 : 2.5
+        VStack(alignment: .leading, spacing: gap) {
+            ForEach(list) { a in
                 let u = store.usage[a.id]
-                let pct = u?.peak ?? 0
-                ZStack(alignment: .bottom) {
+                let pct = min(u?.peak ?? 0, 100)
+                ZStack(alignment: .leading) {
                     Capsule().fill(Theme.track)
                     Capsule().fill(u?.needsAuth == true ? Theme.faint : Theme.level(pct))
-                        .frame(height: max(2.5, 13 * min(pct, 100) / 100))
-                        .opacity(u == nil ? 0 : 1)
+                        .frame(width: u == nil ? 0 : max(h, 26 * pct / 100))
                 }
-                .frame(width: 3, height: 13)
-                .help("\(a.label) · \(Int(pct))%")
+                .frame(width: 26, height: h)
             }
-            if store.visible.isEmpty {
-                Circle().stroke(Theme.faint, lineWidth: 1).frame(width: 8, height: 8)
+            if list.isEmpty {
+                Capsule().fill(Theme.track).frame(width: 26, height: 2)
             }
         }
         .animation(.spring(response: 0.5, dampingFraction: 0.8), value: store.usage)
+        .help(list.map { "\($0.label) \(Int(store.usage[$0.id]?.peak ?? 0))%" }.joined(separator: " · "))
     }
 }
 
@@ -220,11 +230,12 @@ struct NextReset: View {
         if let (w, blocked) = pick() {
             HStack(spacing: 3) {
                 Image(systemName: blocked ? "pause.fill" : "arrow.counterclockwise")
-                    .font(.system(size: 7.5, weight: .bold))
-                Text(Fmt.reset(w.resetsAt, now: store.now)).font(Theme.mono(10.5))
+                    .font(.system(size: 8, weight: .bold))
+                Text(Fmt.reset(w.resetsAt, now: store.now)).font(Theme.num(11.5, .semibold)).lineLimit(1)
             }
-            .foregroundStyle(blocked ? Theme.warn : Theme.dim)
-            .help("Next reset")
+            .fixedSize()
+            .foregroundStyle(blocked ? Theme.warn : Theme.text.opacity(0.8))
+            .help(blocked ? "A maxed-out window resets in \(Fmt.reset(w.resetsAt, now: store.now))" : "Next reset")
         }
     }
 
@@ -267,8 +278,8 @@ struct Row: View {
     let usage: Usage?
     let now: Date
 
-    static let meterWidth: CGFloat = 108
-    static let gap: CGFloat = 18
+    static let meterWidth: CGFloat = 100
+    static let gap: CGFloat = 16
 
     var body: some View {
         HStack(spacing: 0) {
@@ -278,8 +289,8 @@ struct Row: View {
                     HStack(spacing: 5) {
                         Text(account.label).font(Theme.ui(12.5, .semibold)).foregroundStyle(Theme.text).lineLimit(1)
                         if let c = usage?.resetCredits, c > 0 {
-                            Text("\(c)↺").font(Theme.mono(9.5, .semibold)).foregroundStyle(Theme.accent)
-                                .help("\(c) limit reset\(c == 1 ? "" : "s") banked")
+                            Text("\(c) reset\(c == 1 ? "" : "s")").font(Theme.ui(9.5, .semibold)).foregroundStyle(Theme.accent)
+                                .help("\(c) limit reset\(c == 1 ? "" : "s") banked with OpenAI")
                         }
                     }
                     Text(subtitle).font(Theme.ui(10)).foregroundStyle(Theme.faint).lineLimit(1)
@@ -321,22 +332,28 @@ struct Meter: View {
                     Capsule().fill(Theme.track)
                     if let win = window {
                         Capsule().fill(fill(win)).frame(width: max(win.percent > 0 ? 3 : 0, w * min(win.percent, 100) / 100))
-                        if let e = win.elapsed(at: now), e > 0.02, e < 0.98 {
-                            Rectangle().fill(Color.white.opacity(0.55)).frame(width: 1, height: 7).offset(x: w * e - 0.5)
-                        }
                     }
                 }
-                .frame(height: 3)
+                .frame(width: w, height: 3)
+                .overlay(alignment: .leading) {
+                    // Pace: how far through the window we are. Inside the fill it is cut out in black.
+                    if let win = window, let e = win.elapsed(at: now), e > 0.03, e < 0.97 {
+                        let inFill = e * 100 < win.percent
+                        Capsule().fill(inFill ? Color.black : Color.white.opacity(0.45))
+                            .frame(width: inFill ? 1.5 : 1, height: inFill ? 3 : 7)
+                            .offset(x: w * e - 0.75)
+                    }
+                }
                 .frame(maxHeight: .infinity)
             }
             .frame(height: 7)
             HStack(spacing: 0) {
                 if let win = window {
-                    Text("\(Int(win.percent.rounded()))%").font(Theme.mono(10, .semibold)).foregroundStyle(pctColor(win))
+                    Text("\(Int(win.percent.rounded()))%").font(Theme.num(10.5, .semibold)).foregroundStyle(pctColor(win))
                     Spacer(minLength: 4)
-                    Text(Fmt.reset(win.resetsAt, now: now)).font(Theme.mono(10)).foregroundStyle(Theme.dim)
+                    Text(Fmt.reset(win.resetsAt, now: now)).font(Theme.num(10.5)).foregroundStyle(Theme.dim)
                 } else {
-                    Text("—").font(Theme.mono(10)).foregroundStyle(Theme.faint)
+                    Text("—").font(Theme.num(10.5)).foregroundStyle(Theme.faint)
                 }
             }
         }
@@ -349,7 +366,6 @@ struct Meter: View {
 
     private func pctColor(_ w: UsageWindow) -> Color {
         if w.percent >= 85 { return Theme.level(w.percent) }
-        if w.runsOut(at: now) != nil { return Theme.warn }
         return Theme.text
     }
 
@@ -431,7 +447,7 @@ struct Mark: View {
     var body: some View {
         if let img = Self.images[provider] {
             Image(nsImage: img).renderingMode(.template).resizable().interpolation(.high).aspectRatio(contentMode: .fit)
-                .foregroundStyle(provider == .claude ? Theme.claude : Theme.text)
+                .foregroundStyle(Theme.text.opacity(0.85))
         }
     }
 

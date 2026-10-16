@@ -24,7 +24,7 @@ struct SettingsView: View {
                                 Button { onAdd(p) } label: {
                                     HStack(spacing: 6) {
                                         Mark(provider: p).frame(width: 11, height: 11)
-                                        Text("Sign in to \(p == .claude ? "Claude" : "ChatGPT")")
+                                        Text("Add \(p == .claude ? "Claude" : "ChatGPT") account")
                                     }
                                     .font(Theme.ui(11.5)).foregroundStyle(Theme.text)
                                     .padding(.horizontal, 10).frame(height: 24)
@@ -74,7 +74,7 @@ struct SettingsView: View {
                         }
                         VStack(alignment: .leading, spacing: 5) {
                             Text("Hooks").font(Theme.ui(12)).foregroundStyle(Theme.text)
-                            Text("One shell command per line. Each alert arrives as JSON on stdin and in $BRIM_ALERT, so an agent can spend leftover quota or pause work.")
+                            Text("One command per line. Each alert arrives as JSON on stdin and in $BRIM_ALERT, so an agent can act on it: spend leftover quota, pause heavy work.")
                                 .font(Theme.ui(10.5)).foregroundStyle(Theme.dim).fixedSize(horizontal: false, vertical: true)
                             HooksEditor(store: store)
                         }
@@ -169,7 +169,7 @@ struct AccountRow: View {
     }
 
     private var detail: String {
-        let src = account.source == .claudeCode ? "Claude Code login" : account.source == .codexCLI ? "Codex CLI login" : "signed in here"
+        let src: String? = account.source == .claudeCode ? "via Claude Code" : account.source == .codexCLI ? "via Codex CLI" : nil
         return [account.email, Fmt.plan(account.plan ?? store.usage[account.id]?.plan), src].compactMap { $0 }.joined(separator: " · ")
     }
 
@@ -224,7 +224,14 @@ struct HooksEditor: View {
         TextEditor(text: $text)
             .font(Theme.mono(11)).scrollContentBackground(.hidden)
             .padding(6).frame(height: 54)
-            .background(RoundedRectangle(cornerRadius: 5).fill(Color.white.opacity(0.06)))
+            .background(RoundedRectangle(cornerRadius: 5).fill(Color.white.opacity(0.05)))
+            .overlay(RoundedRectangle(cornerRadius: 5).stroke(Color.white.opacity(0.1)))
+            .overlay(alignment: .topLeading) {
+                if text.isEmpty {
+                    Text("hermes chat -q \"$(jq -r .title)\"").font(Theme.mono(11)).foregroundStyle(Theme.faint)
+                        .padding(.horizontal, 11).padding(.vertical, 6).allowsHitTesting(false)
+                }
+            }
             .onAppear { text = store.settings.hooks.joined(separator: "\n") }
             .onChange(of: text) { _, t in
                 store.settings.hooks = t.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
