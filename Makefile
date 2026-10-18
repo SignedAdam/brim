@@ -33,6 +33,8 @@ snap: $(BIN) ## render docs/*.png offscreen
 	@$(BIN) snapshot docs/closed.png >/dev/null
 	@$(BIN) snapshot docs/open.png --open >/dev/null
 	@$(BIN) snapshot docs/flash.png --flash >/dev/null
+	@$(BIN) snapshot docs/external.png --external >/dev/null
+	@$(BIN) snapshot docs/external-open.png --external --open >/dev/null
 	@$(BIN) snapshot docs/settings.png --settings >/dev/null
 	@ls docs/*.png
 

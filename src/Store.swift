@@ -208,6 +208,11 @@ final class Store: ObservableObject {
         JSON.save(Array(usage.values), Paths.usage)
     }
 
+    func restore(_ id: String) {
+        update(id) { $0.hidden = false }
+        Task { await refresh() }
+    }
+
     func move(from: IndexSet, to: Int) {
         var v = visible
         v.move(fromOffsets: from, toOffset: to)

@@ -28,6 +28,8 @@ final class NotchModel: ObservableObject {
     @Published var notchWidth: CGFloat = 186
     @Published var notchHeight: CGFloat = 32
     @Published var hasNotch = true
+    /// Without a notch the shape floats a little below the top edge as a pill.
+    @Published var topInset: CGFloat = 0
 
     static let wing: CGFloat = 60
     static let topRadius: CGFloat = 8
@@ -35,12 +37,15 @@ final class NotchModel: ObservableObject {
     static let rowHeight: CGFloat = 34
     static let flashHeight: CGFloat = 26
 
-    var collapsedSize: CGSize { CGSize(width: notchWidth + 2 * Self.wing, height: notchHeight) }
+    var collapsedSize: CGSize { CGSize(width: notchWidth + 2 * (hasNotch ? Self.wing : Self.wing - 10), height: notchHeight) }
+    /// The header band: the notch's height, or a roomier one for the floating pill once open.
+    var headerHeight: CGFloat { hasNotch || !open ? notchHeight : 32 }
 
     func openSize(rows: Int, footer: Bool = false) -> CGSize {
         var body = rows == 0 ? 64 : 20 + CGFloat(rows) * Self.rowHeight + 12
         if footer { body += 22 }
-        return CGSize(width: max(Self.openWidth, notchWidth + 2 * Self.wing + 40), height: notchHeight + body)
+        let header = hasNotch ? notchHeight : 32
+        return CGSize(width: max(Self.openWidth, notchWidth + 2 * Self.wing + 40), height: header + body)
     }
 }
 
@@ -89,11 +94,18 @@ struct NotchView: View {
     }
 
     var body: some View {
-        let t = NotchModel.topRadius
+        let t = model.hasNotch ? NotchModel.topRadius : 0
         ZStack(alignment: .top) {
-            NotchShape(top: t, bottom: model.open ? 22 : (flashing ? 16 : 10))
-                .fill(Color.black)
-                .shadow(color: .black.opacity(model.open ? 0.55 : 0), radius: 18, y: 8)
+            Group {
+                if model.hasNotch {
+                    NotchShape(top: t, bottom: model.open ? 22 : (flashing ? 16 : 10)).fill(Color.black)
+                } else {
+                    let r = model.open ? 16 : min(14, size.height / 2)
+                    RoundedRectangle(cornerRadius: r, style: .continuous).fill(Color.black)
+                        .overlay(RoundedRectangle(cornerRadius: r, style: .continuous).strokeBorder(Color.white.opacity(0.1), lineWidth: 0.5))
+                }
+            }
+            .shadow(color: .black.opacity(model.open ? 0.55 : (model.hasNotch ? 0 : 0.25)), radius: model.open ? 18 : 4, y: model.open ? 8 : 1)
             VStack(spacing: 0) {
                 header
                 if model.open {
@@ -110,6 +122,7 @@ struct NotchView: View {
             .clipped()
         }
         .frame(width: size.width, height: size.height)
+        .padding(.top, model.topInset)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .animation(.spring(response: 0.38, dampingFraction: 0.82), value: model.open)
         .animation(.spring(response: 0.38, dampingFraction: 0.86), value: flashing)
@@ -128,7 +141,7 @@ struct NotchView: View {
                     Minis(store: store).transition(.opacity)
                 }
             }
-            .padding(.leading, model.open ? 16 : 14)
+            .padding(.leading, model.open ? 16 : (model.hasNotch ? 14 : 10))
             Spacer(minLength: model.notchWidth)
             Group {
                 if model.open {
@@ -145,9 +158,9 @@ struct NotchView: View {
                         .transition(.opacity)
                 }
             }
-            .padding(.trailing, model.open ? 10 : 14)
+            .padding(.trailing, model.open ? 10 : (model.hasNotch ? 14 : 10))
         }
-        .frame(height: model.notchHeight)
+        .frame(height: model.headerHeight)
     }
 
     private var panel: some View {
@@ -430,8 +443,8 @@ struct AddMenu: View {
     var onAdd: (Provider) -> Void
     var body: some View {
         Menu {
-            Button("Sign in to a Claude account…") { onAdd(.claude) }
-            Button("Sign in to a ChatGPT / Codex account…") { onAdd(.codex) }
+            Button("Add Claude Account…") { onAdd(.claude) }
+            Button("Add ChatGPT Account…") { onAdd(.codex) }
         } label: {
             Image(systemName: "plus").font(.system(size: 10.5, weight: .semibold))
         }
@@ -470,11 +483,12 @@ struct IconButton: View {
 /// Brand marks (Simple Icons, CC0). Claude keeps its colour; OpenAI is white.
 struct Mark: View {
     let provider: Provider
+    var tint: Color? = nil
 
     var body: some View {
         if let img = Self.images[provider] {
             Image(nsImage: img).renderingMode(.template).resizable().interpolation(.high).aspectRatio(contentMode: .fit)
-                .foregroundStyle(Theme.text.opacity(0.85))
+                .foregroundStyle(tint ?? Theme.text.opacity(0.85))
         }
     }
 

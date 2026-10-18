@@ -98,14 +98,14 @@ final class App: NSObject, NSApplicationDelegate {
 
     func openSettings() {
         if settingsWindow == nil {
-            let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 520, height: 560),
-                             styleMask: [.titled, .closable, .fullSizeContentView], backing: .buffered, defer: false)
-            w.titlebarAppearsTransparent = true
-            w.titleVisibility = .hidden
+            let host = NSHostingController(rootView: SettingsView(store: store, onAdd: { [weak self] p in self?.signIn(p) },
+                                                                  onDisplay: { [weak self] in self?.notch.place() }))
+            let w = NSWindow(contentViewController: host)
+            w.title = "Brim Settings"
+            w.styleMask = [.titled, .closable]
             w.isReleasedWhenClosed = false
-            w.appearance = NSAppearance(named: .darkAqua)
-            w.backgroundColor = NSColor(white: 0.035, alpha: 1)
-            w.contentView = NSHostingView(rootView: SettingsView(store: store, onAdd: { [weak self] p in self?.signIn(p) }))
+            // Open on the Space you're on, never pull you to the one it was last shown on.
+            w.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
             w.center()
             settingsWindow = w
         }
@@ -155,7 +155,11 @@ enum Agent {
         FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/LaunchAgents/\(label).plist")
     }
 
-    static func install() {
+    static var installed: Bool { FileManager.default.fileExists(atPath: plist.path) }
+
+    /// `restart: false` from inside the app: write and load the agent without killing ourselves
+    /// (the agent's copy sees the lock and exits quietly; it takes over at the next login).
+    static func install(restart: Bool = true) {
         let bin = URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath().path
         let p: [String: Any] = [
             "Label": label, "ProgramArguments": [bin, "run"], "RunAtLoad": true,
@@ -165,7 +169,7 @@ enum Agent {
         Paths.ensure()
         let data = try! PropertyListSerialization.data(fromPropertyList: p, format: .xml, options: 0)
         try! data.write(to: plist)
-        if let pid = Lock.running() { kill(pid, SIGTERM); usleep(400_000) }
+        if restart, let pid = Lock.running() { kill(pid, SIGTERM); usleep(400_000) }
         _ = Shell.run("/bin/launchctl", ["bootout", "gui/\(getuid())/\(label)"])
         _ = Shell.run("/bin/launchctl", ["bootstrap", "gui/\(getuid())", plist.path])
         print("brim runs at login now (\(plist.path))")

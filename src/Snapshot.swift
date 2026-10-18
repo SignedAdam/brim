@@ -17,14 +17,15 @@ enum Snapshot {
             }
             let png: Data
             if args.contains("--settings") {
-                png = render(SettingsView(store: store, onAdd: { _ in }), size: CGSize(width: 520, height: 700))
+                png = render(SettingsView(store: store, onAdd: { _ in }), size: CGSize(width: 460, height: 720))
             } else {
                 let model = NotchModel()
-                model.notchWidth = 186; model.notchHeight = 32
+                model.notchWidth = 160; model.notchHeight = 28
+                if args.contains("--external") { model.hasNotch = false; model.notchWidth = 14; model.notchHeight = 19; model.topInset = 3 }
                 model.open = args.contains("--open")
                 let size = CGSize(width: 640, height: model.open ? 290 : 90)
                 let view = ZStack(alignment: .top) {
-                    Desktop(menuHeight: model.notchHeight)
+                    Desktop(menuHeight: model.hasNotch ? model.notchHeight : 25)
                     NotchView(store: store, model: model)
                         .frame(width: NotchController.canvas.width, height: NotchController.canvas.height)
                         .frame(width: size.width, height: size.height, alignment: .top)

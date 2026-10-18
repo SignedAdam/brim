@@ -17,7 +17,7 @@ struct PKCE {
         }
         verifier = rand(32)
         challenge = Data(SHA256.hash(data: Data(verifier.utf8))).base64url
-        state = rand(16)
+        state = rand(32)
     }
 }
 

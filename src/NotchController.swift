@@ -66,36 +66,57 @@ final class NotchController {
         }) { monitors.append(m) }
     }
 
-    /// The display with a notch, else the main one.
+    /// The screen it sits on now.
+    private(set) var current: NSScreen?
+
+    static func id(_ s: NSScreen) -> String { s.localizedName }
+
+    /// "auto" follows the pointer from screen to screen; otherwise the named screen if it's connected.
     func screen() -> NSScreen? {
         let pref = store.settings.display
-        if pref != "auto", let i = Int(pref), NSScreen.screens.indices.contains(i) { return NSScreen.screens[i] }
-        return NSScreen.screens.first { $0.safeAreaInsets.top > 0 } ?? NSScreen.main ?? NSScreen.screens.first
+        if pref != "auto", let s = NSScreen.screens.first(where: { Self.id($0) == pref }) { return s }
+        let p = NSEvent.mouseLocation
+        return NSScreen.screens.first { NSMouseInRect(p, $0.frame, false) } ?? NSScreen.main ?? NSScreen.screens.first
     }
 
     func place() {
         guard let s = screen() else { return }
+        current = s
         let f = s.frame
         if s.safeAreaInsets.top > 0, let l = s.auxiliaryTopLeftArea, let r = s.auxiliaryTopRightArea {
+            // Hug the camera housing: same height, centred on the gap between the two menu-bar halves.
             model.hasNotch = true
-            model.notchWidth = f.width - l.width - r.width
+            model.notchWidth = r.minX - l.maxX
             model.notchHeight = s.safeAreaInsets.top
+            model.topInset = 0
         } else {
-            // No notch: draw a small one of our own, as tall as the menu bar.
+            // No notch: a small pill floating in the menu bar instead of a fake notch.
+            let bar = max(22, f.maxY - s.visibleFrame.maxY)
             model.hasNotch = false
-            model.notchWidth = 120
-            model.notchHeight = max(22, f.maxY - s.visibleFrame.maxY)
+            model.notchWidth = 14
+            model.topInset = 4
+            model.notchHeight = bar - 8
         }
         let c = Self.canvas
-        panel.setFrame(NSRect(x: f.midX - c.width / 2, y: f.maxY - c.height, width: c.width, height: c.height), display: true)
+        // Centre on the notch itself (it can sit off-centre in the frame on some scaled modes).
+        var mid = f.midX
+        if model.hasNotch, let l = s.auxiliaryTopLeftArea, let r = s.auxiliaryTopRightArea {
+            // The areas may come in screen-local or global coordinates; normalise to global.
+            let lx = l.minX >= f.minX - 1 && r.maxX <= f.maxX + 1 ? l.maxX : f.minX + l.maxX
+            let rx = l.minX >= f.minX - 1 && r.maxX <= f.maxX + 1 ? r.minX : f.minX + r.minX
+            mid = (lx + rx) / 2
+        }
+        panel.setFrame(NSRect(x: mid - c.width / 2, y: f.maxY - c.height, width: c.width, height: c.height), display: true)
     }
 
     /// The black shape's current rect in screen coordinates.
     private func shapeRect(open: Bool) -> NSRect {
-        guard let s = screen() else { return .zero }
+        guard current != nil else { return .zero }
         let size = open ? model.openSize(rows: store.visible.count, footer: store.announcement != nil) : model.collapsedSize
-        let w = size.width - 2 * NotchModel.topRadius
-        return NSRect(x: s.frame.midX - w / 2, y: s.frame.maxY - size.height, width: w, height: size.height)
+        let inset = model.hasNotch ? NotchModel.topRadius : 0
+        let w = size.width - 2 * inset
+        let pf = panel.frame
+        return NSRect(x: pf.midX - w / 2, y: pf.maxY - model.topInset - size.height, width: w, height: size.height)
     }
 
     private func inside(open: Bool) -> Bool {
@@ -105,6 +126,11 @@ final class NotchController {
     }
 
     private func track() {
+        // Follow the pointer to another screen (only while closed, so it never jumps mid-use).
+        if !model.open, store.settings.display == "auto", let cur = current,
+           !NSMouseInRect(NSEvent.mouseLocation, cur.frame, false) {
+            place()
+        }
         if model.open {
             if inside(open: true) {
                 closeTimer?.invalidate(); closeTimer = nil

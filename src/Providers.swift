@@ -71,7 +71,11 @@ enum Claude {
     static let clientId = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
     static let authorizeURL = "https://claude.com/cai/oauth/authorize"
     static let tokenURL = "https://platform.claude.com/v1/oauth/token"
-    static let scopes = ["user:profile", "user:inference", "user:sessions:claude_code", "user:mcp_servers", "user:file_upload"]
+    /// Exactly what Claude Code asks for; claude.ai rejects other combinations ("Invalid request format").
+    static let scopes = ["org:create_api_key", "user:profile", "user:inference", "user:sessions:claude_code",
+                         "user:mcp_servers", "user:file_upload", "user:plugins"]
+    static let refreshScopes = ["user:profile", "user:inference", "user:sessions:claude_code", "user:mcp_servers",
+                                "user:file_upload", "user:plugins"]
     static let keychainService = "Claude Code-credentials"
 
     struct Creds { var access: String; var refresh: String?; var expiresAt: Date?; var plan: String? }
@@ -143,7 +147,7 @@ enum Claude {
 
     static func refresh(_ refresh: String) async throws -> (access: String, refresh: String, expiresAt: Date) {
         let o = try await HTTP.post(tokenURL, json: ["grant_type": "refresh_token", "refresh_token": refresh,
-                                                     "client_id": clientId, "scope": scopes.joined(separator: " ")])
+                                                     "client_id": clientId, "scope": refreshScopes.joined(separator: " ")])
         guard let at = o["access_token"] as? String else { throw ProviderError.auth("refresh failed") }
         let exp = Date().addingTimeInterval((o["expires_in"] as? Double) ?? 3600)
         return (at, (o["refresh_token"] as? String) ?? refresh, exp)
