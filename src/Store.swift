@@ -136,7 +136,7 @@ final class Store: ObservableObject {
             if firstRun || now.timeIntervalSince(a.at) > 6 * 3600 { fired.insert("ann:\(a.id)"); continue }
             fire(Alert(kind: .announced, accountId: "", account: a.provider == .claude ? "Anthropic" : "OpenAI",
                        provider: a.provider, window: nil, percent: nil, resetsAt: nil,
-                       title: a.summary, key: "ann:\(a.id)", at: now))
+                       title: a.short, key: "ann:\(a.id)", at: now))
         }
         JSON.save(Array(fired), Paths.fired)
     }

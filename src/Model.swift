@@ -203,14 +203,17 @@ enum Fmt {
         return h % 24 == 0 ? "\(d)d" : "\(d)d \(h % 24)h"
     }
 
-    /// Short reset label: within a day a countdown, else the weekday.
+    /// Short reset label: always a countdown ("37m", "2h14", "3d 4h").
     static func reset(_ date: Date?, now: Date) -> String {
         guard let date else { return "" }
-        let t = date.timeIntervalSince(now)
-        if t < 24 * 3600 { return duration(t) }
+        return duration(date.timeIntervalSince(now))
+    }
+
+    /// "Mon 06:52", for tooltips.
+    static func when(_ date: Date) -> String {
         let f = DateFormatter()
         f.locale = Locale(identifier: "en_US_POSIX")
-        f.dateFormat = t < 6 * 24 * 3600 ? "EEE HH:mm" : "MMM d"
+        f.dateFormat = "EEE d MMM HH:mm"
         return f.string(from: date)
     }
 
@@ -317,15 +320,20 @@ struct Announcement: Codable, Equatable, Identifiable {
     var id: String
     var provider: Provider
     var summary: String
+    var product: String?
     var url: String?
     var at: Date
+
+    /// One short line: "Codex limits reset".
+    var short: String { "\(product ?? (provider == .claude ? "Claude" : "Codex")) limits reset" }
 
     static func parse(_ o: [String: Any]) -> [Announcement] {
         ((o["resets"] as? [[String: Any]]) ?? []).compactMap { r in
             guard let id = r["id"] as? String, let s = r["summary"] as? String,
                   let at = ((r["posted_at"] as? String) ?? (r["detected_at"] as? String)).flatMap(JSON.parseDate) else { return nil }
             let p: Provider = (r["provider"] as? String) == "anthropic" ? .claude : .codex
-            return Announcement(id: id, provider: p, summary: s, url: r["source_url"] as? String, at: at)
+            let product = (r["product"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+            return Announcement(id: id, provider: p, summary: s, product: product, url: r["source_url"] as? String, at: at)
         }
     }
 }

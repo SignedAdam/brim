@@ -78,7 +78,7 @@ enum Snapshot {
             s.usage[id] = Usage(accountId: id, fetchedAt: now.addingTimeInterval(-50),
                                 windows: [w(.session, r.3, r.4), w(.weekly, r.5, r.6)], plan: r.2, resetCredits: r.7)
         }
-        s.announcement = Announcement(id: "x", provider: .codex, summary: "Codex usage limits reset", url: nil,
+        s.announcement = Announcement(id: "x", provider: .codex, summary: "Codex usage limits reset after an eventful week of outages", product: "Codex", url: nil,
                                       at: now.addingTimeInterval(-3 * 3600))
         return s
     }

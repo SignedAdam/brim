@@ -42,7 +42,7 @@ final class NotchModel: ObservableObject {
     var headerHeight: CGFloat { hasNotch || !open ? notchHeight : 32 }
 
     func openSize(rows: Int, footer: Bool = false) -> CGSize {
-        var body = rows == 0 ? 64 : 20 + CGFloat(rows) * Self.rowHeight + 12
+        var body = rows == 0 ? 64 : 14 + CGFloat(rows) * Self.rowHeight + 4
         if footer { body += 22 }
         let header = hasNotch ? notchHeight : 32
         return CGSize(width: max(Self.openWidth, notchWidth + 2 * Self.wing + 40), height: header + body)
@@ -174,7 +174,7 @@ struct NotchView: View {
                     ColumnLabel("Week").frame(width: Row.meterWidth, alignment: .leading).padding(.leading, Row.gap)
                 }
                 .padding(.horizontal, 16)
-                .frame(height: 20, alignment: .bottom)
+                .frame(height: 14, alignment: .bottom)
                 ForEach(rows) { a in
                     Row(account: a, usage: store.usage[a.id], now: store.now)
                         .frame(height: NotchModel.rowHeight)
@@ -188,7 +188,7 @@ struct NotchView: View {
                 }
             }
             if let an = store.announcement {
-                Announced(item: an, now: store.now).frame(height: 22).padding(.horizontal, 16).offset(y: -4)
+                Announced(item: an, now: store.now).frame(height: 18).padding(.horizontal, 16).padding(.top, 4)
             }
         }
     }
@@ -212,15 +212,15 @@ struct Announced: View {
         } label: {
             HStack(spacing: 0) {
                 Circle().fill(Theme.accent).frame(width: 4, height: 4).frame(width: 13)
-                Text(item.summary).foregroundStyle(Theme.dim).lineLimit(1).padding(.leading, 8)
+                Text(item.short).foregroundStyle(Theme.dim).lineLimit(1).padding(.leading, 8)
                 Spacer(minLength: 6)
-                Text("announced \(Fmt.duration(now.timeIntervalSince(item.at))) ago").font(Theme.num(10)).foregroundStyle(Theme.faint)
+                Text("\(Fmt.duration(now.timeIntervalSince(item.at))) ago").font(Theme.num(10)).foregroundStyle(Theme.faint)
             }
             .font(Theme.ui(10.5))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .help("Announced in public. Opens the post.")
+        .help("\(item.summary). Opens the post.")
     }
 }
 
@@ -412,7 +412,7 @@ struct Meter: View {
     private var help: String {
         guard let w = window else { return "No data" }
         var s = "\(w.label): \(Int(w.percent))% used"
-        if let r = w.resetsAt { s += ", resets in \(Fmt.duration(r.timeIntervalSince(now)))" }
+        if let r = w.resetsAt { s += ", resets \(Fmt.when(r))" }
         if let out = w.runsOut(at: now) { s += ". At this pace it runs out in \(Fmt.duration(out.timeIntervalSince(now)))" }
         else if let p = w.projected(at: now) { s += ". At this pace: \(Int(min(p, 100)))% by reset" }
         return s
