@@ -84,6 +84,7 @@ final class App: NSObject, NSApplicationDelegate {
     }
 
     func signIn(_ p: Provider) {
+        if p == .openrouter { return addKey() }
         store.show(Flash(text: "Finish signing in to \(p.name) in your browser", provider: p), seconds: 30)
         Task {
             do {
@@ -92,6 +93,33 @@ final class App: NSObject, NSApplicationDelegate {
                 store.show(Flash(text: "Added \(a.label)\(a.email.map { " · \($0)" } ?? "")", provider: p, tone: .accent))
             } catch {
                 store.show(Flash(text: "\(p.name) sign-in: \(error)", provider: p, tone: .warn), seconds: 8)
+            }
+        }
+    }
+
+    /// Asks for an OpenRouter key in a small native sheet, checks it, then adds it.
+    func addKey() {
+        let alert = NSAlert()
+        alert.messageText = "Add OpenRouter Key"
+        alert.informativeText = "openrouter.ai/settings/keys"
+        let field = NSSecureTextField(frame: NSRect(x: 0, y: 0, width: 280, height: 22))
+        field.placeholderString = "sk-or-v1-…"
+        alert.accessoryView = field
+        alert.addButton(withTitle: "Add")
+        alert.addButton(withTitle: "Cancel")
+        alert.window.initialFirstResponder = field
+        alert.window.collectionBehavior = [.moveToActiveSpace]
+        NSApp.activate(ignoringOtherApps: true)
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let key = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !key.isEmpty else { return }
+        Task {
+            do {
+                let a = try await SignIn.openRouter(key: key, keyVar: nil, label: nil)
+                try store.add(a)
+                store.show(Flash(text: "Added \(a.label)", provider: .openrouter, tone: .accent))
+            } catch {
+                store.show(Flash(text: "OpenRouter key: \(error)", provider: .openrouter, tone: .warn), seconds: 8)
             }
         }
     }

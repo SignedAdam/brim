@@ -105,6 +105,21 @@ enum Selftest {
         let p = PKCE()
         expect(p.verifier.count >= 43 && !p.challenge.contains("=") && p.state.count > 10, "pkce shape")
 
+        // OpenRouter.
+        let ob = OpenRouter.parse(key: ["usage_daily": 3.2, "usage_weekly": 10, "limit": NSNull(), "limit_remaining": NSNull()],
+                                  credits: ["total_credits": 100, "total_usage": 57.5])
+        expect(ob.remaining == 42.5 && ob.total == 100 && abs((ob.usedPercent ?? 0) - 57.5) < 0.001 && ob.today == 3.2, "openrouter credits")
+        let capped = OpenRouter.parse(key: ["limit": 20, "limit_remaining": 4], credits: ["total_credits": 100, "total_usage": 10])
+        expect(capped.remaining == 4 && capped.total == 20, "key limit wins when tighter")
+        let nocred = OpenRouter.parse(key: ["usage_daily": 1], credits: nil)
+        expect(nocred.remaining == nil && nocred.today == 1, "no credits access")
+        var bs = Settings(); bs.lowBalance = 5
+        let ora = Account(id: "o", provider: .openrouter, source: .apiKey, label: "OpenRouter")
+        let low = Alerts.evaluate(account: ora, old: nil, new: Usage(accountId: "o", fetchedAt: now, balance: Balance(remaining: 3.4, total: 50)),
+                                  settings: bs, fired: [], now: now)
+        expect(low.count == 1 && low[0].kind == .balance && low[0].title.contains("$3.40"), "low balance alert")
+        expect(Fmt.money(42.1) == "$42.10" && Fmt.money(1234) == "$1.2k", "money")
+
         // Notch geometry: the wings always leave the camera housing's width free.
         MainActor.assumeIsolated {
             let m = NotchModel()

@@ -80,6 +80,9 @@ enum Snapshot {
             s.usage[id] = Usage(accountId: id, fetchedAt: now.addingTimeInterval(-50),
                                 windows: [w(.session, r.3, r.4), w(.weekly, r.5, r.6)], plan: r.2, resetCredits: r.7)
         }
+        s.accounts.append(Account(id: "sample-or", provider: .openrouter, source: .apiKey, label: "OpenRouter"))
+        s.usage["sample-or"] = Usage(accountId: "sample-or", fetchedAt: now.addingTimeInterval(-50),
+                                     balance: Balance(remaining: 42.18, total: 100, today: 3.27, week: 18.9))
         s.announcement = Announcement(id: "x", provider: .codex, summary: "Codex usage limits reset after an eventful week of outages", product: "Codex", url: nil,
                                       at: now.addingTimeInterval(-3 * 3600))
         return s

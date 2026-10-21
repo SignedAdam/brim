@@ -18,12 +18,14 @@ struct SettingsView: View {
                 HStack {
                     Button("Add Claude Account…") { onAdd(.claude) }
                     Button("Add ChatGPT Account…") { onAdd(.codex) }
+                    Button("Add OpenRouter Key…") { onAdd(.openrouter) }
                     Spacer()
                     let hidden = store.accounts.filter(\.isHidden)
                     if !hidden.isEmpty {
                         Menu("Restore") {
                             ForEach(hidden) { a in
-                                Button(a.source == .claudeCode ? "Claude Code login" : "Codex CLI login") { store.restore(a.id) }
+                                Button(a.source == .claudeCode ? "Claude Code login" : a.source == .codexCLI ? "Codex CLI login"
+                                       : "OpenRouter key (\(a.keyVar ?? "env"))") { store.restore(a.id) }
                             }
                         }
                         .fixedSize()
@@ -44,6 +46,12 @@ struct SettingsView: View {
                         Text("% left,").foregroundStyle(.secondary)
                         NumberField(value: $store.settings.leftoverLeadHours, onCommit: store.saveSettings)
                         Text("h before reset").foregroundStyle(.secondary)
+                    }
+                }
+                LabeledContent("Low balance") {
+                    HStack(spacing: 4) {
+                        Text("$").foregroundStyle(.secondary)
+                        NumberField(value: $store.settings.lowBalance, onCommit: store.saveSettings)
                     }
                 }
                 Toggle("Limit resets", isOn: bind(\.alertOnReset))
@@ -71,7 +79,7 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .frame(width: 460)
+        .frame(width: 540)
         .frame(minHeight: 560)
     }
 
