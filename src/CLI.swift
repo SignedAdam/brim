@@ -14,6 +14,8 @@ enum CLI {
           brim list                 accounts and where their login comes from
           brim add claude|codex [--label NAME]
                                     sign in to another account in the browser
+          brim add openrouter [--env VAR] [--label NAME]
+                                    an OpenRouter key: from stdin, or tracked by env var name
           brim rename <account> <label>
           brim remove <account>     <account> = label, email or id prefix
           brim alerts [-n N]        recent alerts, JSON lines
@@ -104,6 +106,14 @@ enum CLI {
                     if let e = u.error { o["error"] = e }
                     if u.needsAuth == true { o["needs_auth"] = true }
                     if let c = u.resetCredits { o["reset_credits"] = c }
+                    if let b = u.balance {
+                        var d: [String: Any] = ["currency": "USD"]
+                        if let v = b.remaining { d["remaining"] = v }
+                        if let v = b.total { d["total"] = v }
+                        if let v = b.today { d["spent_today"] = v }
+                        if let v = b.week { d["spent_week"] = v }
+                        o["balance"] = d
+                    }
                     o["windows"] = u.windows.map { w -> [String: Any] in
                         var d: [String: Any] = ["kind": w.kind.rawValue, "label": w.label, "percent": w.percent,
                                                 "left_percent": max(0, 100 - w.percent)]
@@ -128,7 +138,11 @@ enum CLI {
             let u = usage[a.id]
             var line = a.label.padding(toLength: w + 2, withPad: " ", startingAt: 0)
             if let u, u.needsAuth == true { line += "sign in again (\(u.error ?? ""))" }
-            else if let u, u.windows.isEmpty, let e = u.error { line += "error: \(e)" }
+            else if let u, !u.hasData, let e = u.error { line += "error: \(e)" }
+            else if let u, let b = u.balance {
+                line += "balance \(b.usedPercent.map { bar($0) } ?? "")  \(b.remaining.map(Fmt.money) ?? "?") left"
+                if let t = b.today { line += "   today \(Fmt.money(t))" }
+            }
             else if let u {
                 line += u.windows.filter { $0.kind != .model || $0.percent >= 1 }.map { win in
                     let bar = bar(win.percent)
@@ -148,28 +162,48 @@ enum CLI {
 
     static func list() {
         for a in accounts() {
-            let src = a.source == .claudeCode ? "Claude Code login" : a.source == .codexCLI ? "Codex CLI login" : "signed in to brim"
+            let src = a.source == .claudeCode ? "Claude Code login" : a.source == .codexCLI ? "Codex CLI login"
+                : a.source == .apiKey ? (a.keyVar.map { "key from $\($0)" } ?? "stored key") : "signed in to brim"
             print("\(a.id.prefix(8))  \(a.label)\(a.isHidden ? " (hidden)" : "")  \(a.provider.name) · \(a.email ?? "-") · \(src)")
         }
     }
 
     static func add(_ args: [String]) {
-        guard let p = args.first.flatMap(Provider.init(rawValue:)) else { print("usage: brim add claude|codex [--label NAME]"); exit(2) }
+        guard let p = args.first.flatMap(Provider.init(rawValue:)) else { print("usage: brim add claude|codex|openrouter [--label NAME]"); exit(2) }
         let label = args.firstIndex(of: "--label").flatMap { args.indices.contains($0 + 1) ? args[$0 + 1] : nil }
+        if p == .openrouter {
+            let envVar = args.firstIndex(of: "--env").flatMap { args.indices.contains($0 + 1) ? args[$0 + 1] : nil }
+            let key: String?
+            if let envVar { key = OpenRouter.env(envVar) }
+            else if isatty(0) != 0 { key = String(cString: getpass("OpenRouter key: ")) }
+            else { key = readLine() }
+            guard let key = key?.trimmingCharacters(in: .whitespacesAndNewlines), !key.isEmpty else {
+                print(envVar.map { "\($0) is not set" } ?? "no key"); exit(1)
+            }
+            do {
+                let a = try await_ { try await SignIn.openRouter(key: key, keyVar: envVar, label: label) }
+                save(a)
+            } catch { print("key rejected: \(error)"); exit(1) }
+            return
+        }
         print("Opening your browser to sign in to \(p.name)…")
         do {
             let a = try await_ { try await SignIn.run(p, label: label) }
-            var list = accounts()
-            if let r = a.remoteId, let d = list.first(where: { $0.provider == p && $0.remoteId == r && !$0.isHidden }) {
-                print("already tracked as \(d.label)"); exit(1)
-            }
-            list.append(a)
-            JSON.save(list, Paths.accounts)
-            notify()
-            print("added \(a.label)\(a.email.map { " (\($0))" } ?? "")")
+            save(a)
         } catch {
             print("sign-in failed: \(error)"); exit(1)
         }
+    }
+
+    static func save(_ a: Account) {
+        var list = accounts()
+        if let r = a.remoteId, let d = list.first(where: { $0.provider == a.provider && $0.remoteId == r && !$0.isHidden }) {
+            print("already tracked as \(d.label)"); exit(1)
+        }
+        list.append(a)
+        JSON.save(list, Paths.accounts)
+        notify()
+        print("added \(a.label)\(a.email.map { " (\($0))" } ?? "")")
     }
 
     static func rename(_ args: [String]) {
@@ -186,7 +220,7 @@ enum CLI {
         var list = accounts()
         guard let i = find(q, in: list) else { print("no account \(q)"); exit(1) }
         let name = list[i].label
-        if list[i].source == .signIn { list.remove(at: i) } else { list[i].hidden = true }
+        if MainActor.assumeIsolated({ Store.discovered(list[i]) }) { list[i].hidden = true } else { list.remove(at: i) }
         JSON.save(list, Paths.accounts); notify()
         print("removed \(name)")
     }

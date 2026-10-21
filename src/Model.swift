@@ -6,9 +6,15 @@ import Foundation
 let VERSION = "0.1.0"
 
 enum Provider: String, Codable, CaseIterable {
-    case claude, codex
+    case claude, codex, openrouter
 
-    var name: String { self == .claude ? "Claude" : "Codex" }
+    var name: String {
+        switch self {
+        case .claude: return "Claude"
+        case .codex: return "Codex"
+        case .openrouter: return "OpenRouter"
+        }
+    }
 }
 
 /// Where an account's credentials come from.
@@ -20,6 +26,9 @@ enum Source: String, Codable {
     case codexCLI
     /// Brim's own sign-in. Brim owns and refreshes these tokens.
     case signIn
+    /// An API key (OpenRouter): stored in `accessToken`, or read from `keyVar` in the
+    /// environment / ~/.config/secrets/global.env so it never gets copied.
+    case apiKey
 }
 
 struct Account: Codable, Identifiable, Equatable {
@@ -34,6 +43,8 @@ struct Account: Codable, Identifiable, Equatable {
     /// For `.codexCLI`: the CODEX_HOME directory. Nil = ~/.codex.
     var path: String?
     var hidden: Bool?
+    /// For `.apiKey`: the env var holding the key instead of storing it.
+    var keyVar: String?
 
     // Tokens, only for `.signIn`.
     var accessToken: String?
@@ -77,6 +88,21 @@ struct UsageWindow: Codable, Equatable, Identifiable {
     }
 }
 
+/// Prepaid credit (OpenRouter), in dollars.
+struct Balance: Codable, Equatable {
+    /// Credit left. Nil when the key can't see the account's credits and has no limit of its own.
+    var remaining: Double?
+    /// Credit bought (or the key's limit), so `used / total` can draw a bar.
+    var total: Double?
+    var today: Double?
+    var week: Double?
+
+    var usedPercent: Double? {
+        guard let total, total > 0, let remaining else { return nil }
+        return min(100, max(0, (total - remaining) / total * 100))
+    }
+}
+
 struct Usage: Codable, Equatable {
     var accountId: String
     var fetchedAt: Date
@@ -84,6 +110,7 @@ struct Usage: Codable, Equatable {
     var plan: String?
     /// Codex: banked "reset my limits" credits.
     var resetCredits: Int?
+    var balance: Balance?
     var error: String?
     /// True when the credentials are gone or expired and the user must act.
     var needsAuth: Bool?
@@ -91,7 +118,8 @@ struct Usage: Codable, Equatable {
     var session: UsageWindow? { windows.first { $0.kind == .session } }
     var weekly: UsageWindow? { windows.first { $0.kind == .weekly } }
     /// The tightest window right now.
-    var peak: Double { windows.map(\.percent).max() ?? 0 }
+    var peak: Double { (windows.map(\.percent) + [balance?.usedPercent].compactMap { $0 }).max() ?? 0 }
+    var hasData: Bool { !windows.isEmpty || balance != nil }
 }
 
 // MARK: - Settings
@@ -114,6 +142,8 @@ struct Settings: Codable, Equatable {
     var display: String = "auto"
     /// Watch resets.albastov.com for announced resets (OpenAI / Anthropic posting "limits reset").
     var announcements: Bool = true
+    /// Warn when a prepaid balance (OpenRouter) drops below this many dollars.
+    var lowBalance: Double = 5
 
     init() {}
 
@@ -129,13 +159,14 @@ struct Settings: Codable, Equatable {
         pager = (try? c.decode(Bool.self, forKey: .pager)) ?? z.pager
         display = (try? c.decode(String.self, forKey: .display)) ?? z.display
         announcements = (try? c.decode(Bool.self, forKey: .announcements)) ?? z.announcements
+        lowBalance = (try? c.decode(Double.self, forKey: .lowBalance)) ?? z.lowBalance
     }
 }
 
 // MARK: - Alerts
 
 struct Alert: Codable, Equatable {
-    enum Kind: String, Codable { case threshold, leftover, reset, credits, auth, announced }
+    enum Kind: String, Codable { case threshold, leftover, reset, credits, auth, announced, balance }
     var kind: Kind
     var accountId: String
     var account: String
@@ -183,6 +214,10 @@ enum Alerts {
                 add(.reset, w, "\(a.label) \(w.label) reset", "reset:\(a.id):\(w.id):\(Int(or.timeIntervalSince1970 / 600))")
             }
         }
+        if let r = new.balance?.remaining, s.lowBalance > 0, r < s.lowBalance {
+            // Once per dollar step down, so a draining balance speaks up again but not every poll.
+            add(.balance, nil, "\(a.label) balance at \(Fmt.money(r))", "bal:\(a.id):\(Int(r.rounded(.down)))")
+        }
         if let c = new.resetCredits, c > (old?.resetCredits ?? c) {
             add(.credits, nil, "\(a.label): a new limit reset is available (\(c) banked)", "cred:\(a.id):\(c)")
         }
@@ -215,6 +250,13 @@ enum Fmt {
         f.locale = Locale(identifier: "en_US_POSIX")
         f.dateFormat = "EEE d MMM HH:mm"
         return f.string(from: date)
+    }
+
+    /// "$42.10", "$0.84", "$1.2k"
+    static func money(_ v: Double) -> String {
+        if v >= 10_000 { return String(format: "$%.0fk", v / 1000) }
+        if v >= 1000 { return String(format: "$%.1fk", v / 1000) }
+        return String(format: "$%.2f", v)
     }
 
     static func plan(_ raw: String?) -> String? {

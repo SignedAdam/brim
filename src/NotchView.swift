@@ -186,7 +186,7 @@ struct NotchView: View {
                 .padding(.horizontal, 16)
                 .frame(height: 14, alignment: .bottom)
                 ForEach(rows) { a in
-                    Row(account: a, usage: store.usage[a.id], now: store.now)
+                    Row(account: a, usage: store.usage[a.id], now: store.now, lowBalance: store.settings.lowBalance)
                         .frame(height: NotchModel.rowHeight)
                         .padding(.horizontal, 16)
                         .contextMenu {
@@ -326,6 +326,7 @@ struct Row: View {
     let account: Account
     let usage: Usage?
     let now: Date
+    var lowBalance: Double = 5
 
     static let meterWidth: CGFloat = 100
     static let gap: CGFloat = 16
@@ -346,10 +347,13 @@ struct Row: View {
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            if let u = usage, u.needsAuth == true || (u.windows.isEmpty && u.error != nil) {
-                Text(u.needsAuth == true ? "Sign in again" : (u.error ?? ""))
+            if let u = usage, u.needsAuth == true || (!u.hasData && u.error != nil) {
+                Text(u.needsAuth == true ? (account.source == .apiKey ? "Key rejected" : "Sign in again") : (u.error ?? ""))
                     .font(Theme.ui(11)).foregroundStyle(Theme.warn).lineLimit(1)
                     .frame(width: 2 * Self.meterWidth + Self.gap, alignment: .leading)
+            } else if account.provider == .openrouter {
+                Spend(today: usage?.balance?.today, week: usage?.balance?.week).frame(width: Self.meterWidth)
+                BalanceMeter(balance: usage?.balance, low: lowBalance).frame(width: Self.meterWidth).padding(.leading, Self.gap)
             } else {
                 Meter(window: usage?.session, now: now).frame(width: Self.meterWidth)
                 Meter(window: usage?.weekly, now: now).frame(width: Self.meterWidth).padding(.leading, Self.gap)
@@ -359,11 +363,60 @@ struct Row: View {
 
     private var subtitle: String {
         var parts: [String] = []
+        if account.provider == .openrouter { parts.append("Credits") }
         if let p = Fmt.plan(account.plan ?? usage?.plan) { parts.append(p) }
         if let m = usage?.windows.first(where: { $0.kind == .model && $0.percent >= 40 }) { parts.append("\(m.label) \(Int(m.percent))%") }
         if parts.isEmpty { parts.append(account.provider.name) }
         if usage?.error != nil, usage?.needsAuth != true, !(usage?.windows.isEmpty ?? true) { parts.append("stale") }
         return parts.joined(separator: " · ")
+    }
+}
+
+/// OpenRouter, first column: what today cost, with the week in the tooltip.
+struct Spend: View {
+    let today: Double?
+    let week: Double?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Color.clear.frame(height: 7)
+            HStack(spacing: 0) {
+                Text(today.map(Fmt.money) ?? "—").font(Theme.num(10.5, .semibold)).foregroundStyle(Theme.text)
+                Spacer(minLength: 4)
+                Text("today").font(Theme.num(10.5)).foregroundStyle(Theme.dim)
+            }
+        }
+        .help(week.map { "This key spent \(Fmt.money($0)) this week (UTC)" } ?? "Spent today")
+    }
+}
+
+/// OpenRouter, second column: credit used as the fill, what's left as the number.
+struct BalanceMeter: View {
+    let balance: Balance?
+    let low: Double
+
+    var body: some View {
+        let left = balance?.remaining
+        let isLow = left.map { $0 < low } ?? false
+        VStack(alignment: .leading, spacing: 4) {
+            GeometryReader { g in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(Theme.track)
+                    if let p = balance?.usedPercent {
+                        Capsule().fill(isLow ? Theme.warn : Color.white.opacity(0.88))
+                            .frame(width: max(p > 0 ? 3 : 0, g.size.width * p / 100))
+                    }
+                }
+                .frame(height: 3).frame(maxHeight: .infinity)
+            }
+            .frame(height: 7)
+            HStack(spacing: 0) {
+                Text(left.map(Fmt.money) ?? "—").font(Theme.num(10.5, .semibold)).foregroundStyle(isLow ? Theme.warn : Theme.text)
+                Spacer(minLength: 4)
+                Text("left").font(Theme.num(10.5)).foregroundStyle(Theme.dim)
+            }
+        }
+        .help(balance?.total.map { "Balance: \(Fmt.money(left ?? 0)) of \(Fmt.money($0))" } ?? "Balance")
     }
 }
 
@@ -454,6 +507,7 @@ struct AddMenu: View {
         Menu {
             Button("Add Claude Account…") { onAdd(.claude) }
             Button("Add ChatGPT Account…") { onAdd(.codex) }
+            Button("Add OpenRouter Key…") { onAdd(.openrouter) }
         } label: {
             Image(systemName: "plus").font(.system(size: 10.5, weight: .semibold))
         }
@@ -503,7 +557,7 @@ struct Mark: View {
 
     static let images: [Provider: NSImage] = {
         var out: [Provider: NSImage] = [:]
-        for (p, svg) in [(Provider.claude, MarkSVG.claude), (.codex, MarkSVG.openai)] {
+        for (p, svg) in [(Provider.claude, MarkSVG.claude), (.codex, MarkSVG.openai), (.openrouter, MarkSVG.openrouter)] {
             if let img = NSImage(data: Data(svg.replacingOccurrences(of: "<svg ", with: "<svg width=\"48\" height=\"48\" ").utf8)) {
                 img.isTemplate = true
                 out[p] = img

@@ -254,6 +254,62 @@ enum Codex {
     }
 }
 
+// MARK: - OpenRouter
+
+enum OpenRouter {
+    static let base = "https://openrouter.ai/api/v1"
+
+    /// The key: stored on the account, or looked up by name in the environment, then in
+    /// ~/.config/secrets/global.env (LaunchAgents don't see shell env).
+    static func key(_ a: Account) -> String? {
+        if let k = a.accessToken, !k.isEmpty { return k }
+        guard let v = a.keyVar else { return nil }
+        return env(v)
+    }
+
+    static func env(_ name: String) -> String? {
+        if let v = ProcessInfo.processInfo.environment[name], !v.isEmpty { return v }
+        let file = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".config/secrets/global.env")
+        guard let text = try? String(contentsOf: file, encoding: .utf8) else { return nil }
+        for raw in text.split(separator: "\n") {
+            var line = raw.trimmingCharacters(in: .whitespaces)
+            if line.hasPrefix("export ") { line = String(line.dropFirst(7)) }
+            guard line.hasPrefix(name + "=") else { continue }
+            var v = String(line.dropFirst(name.count + 1))
+            if v.count >= 2, let f = v.first, f == "\"" || f == "'", v.last == f { v = String(v.dropFirst().dropLast()) }
+            return v.isEmpty ? nil : v
+        }
+        return nil
+    }
+
+    static func get(_ path: String, _ key: String) async throws -> [String: Any] {
+        var r = URLRequest(url: URL(string: base + path)!)
+        r.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+        return (try await HTTP.json(r))["data"] as? [String: Any] ?? [:]
+    }
+
+    /// Balance from /credits (whole account) when the key may read it, else the key's own limit.
+    static func balance(_ key: String) async throws -> (Balance, label: String?) {
+        let k = try await get("/key", key)
+        let credits = try? await get("/credits", key)
+        return (parse(key: k, credits: credits), k["label"] as? String)
+    }
+
+    static func parse(key k: [String: Any], credits c: [String: Any]?) -> Balance {
+        func num(_ o: [String: Any]?, _ f: String) -> Double? { (o?[f] as? NSNumber)?.doubleValue }
+        var b = Balance(today: num(k, "usage_daily"), week: num(k, "usage_weekly"))
+        if let total = num(c, "total_credits"), let used = num(c, "total_usage") {
+            b.total = total
+            b.remaining = max(0, total - used)
+        }
+        if let left = num(k, "limit_remaining") {
+            // A key with its own cap: whichever runs out first is what matters.
+            if b.remaining == nil || left < b.remaining! { b.remaining = left; b.total = num(k, "limit") }
+        }
+        return b
+    }
+}
+
 // MARK: - Fetching one account
 
 enum Fetcher {
@@ -281,6 +337,9 @@ enum Fetcher {
                 try await refreshIfNeeded(&acct, now: now)
                 let r = Codex.parse(try await Codex.usage(acct.accessToken ?? "", accountId: acct.remoteId))
                 (u.windows, u.plan, u.resetCredits) = (r.windows, r.plan, r.credits)
+            case (.openrouter, _):
+                guard let key = OpenRouter.key(a) else { throw ProviderError.auth("no API key") }
+                u.balance = try await OpenRouter.balance(key).0
             }
             if let p = u.plan { acct.plan = p }
         } catch let e as ProviderError {
@@ -308,6 +367,7 @@ enum Fetcher {
                 let r = try await Codex.refresh(rt)
                 (a.accessToken, a.refreshToken) = (r.access, r.refresh)
                 a.expiresAt = (jwtClaims(r.access)["exp"] as? Double).map { Date(timeIntervalSince1970: $0) }
+            case .openrouter: break
             }
             log("refreshed \(a.provider.rawValue) \(a.label)")
         } catch {

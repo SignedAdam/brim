@@ -103,10 +103,21 @@ final class Loopback {
 }
 
 enum SignIn {
+    /// Checks an OpenRouter key and returns an account for it. `keyVar` = keep only the env var's name.
+    static func openRouter(key: String, keyVar: String?, label: String?) async throws -> Account {
+        let (_, keyLabel) = try await OpenRouter.balance(key)
+        let fingerprint = Data(SHA256.hash(data: Data(key.utf8))).base64url.prefix(12)
+        return Account(id: UUID().uuidString, provider: .openrouter, source: .apiKey, label: label ?? "OpenRouter",
+                       email: keyLabel, remoteId: String(fingerprint), keyVar: keyVar,
+                       accessToken: keyVar == nil ? key : nil)
+    }
+
     /// Opens the browser, waits for the callback, exchanges the code, and returns a new account.
     static func run(_ provider: Provider, label: String?) async throws -> Account {
         let pkce = PKCE()
         switch provider {
+        case .openrouter:
+            throw ProviderError.other("OpenRouter uses an API key")
         case .claude:
             let lb = try Loopback()
             NSWorkspace.shared.open(Claude.authorizeURL(port: lb.port, pkce: pkce))

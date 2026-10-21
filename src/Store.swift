@@ -61,6 +61,12 @@ final class Store: ObservableObject {
             accounts.append(Account(id: UUID().uuidString, provider: .codex, source: .codexCLI, label: "ChatGPT"))
             changed = true
         }
+        // An OpenRouter key in the environment or global.env: track it by name, never copy it.
+        if !accounts.contains(where: { $0.keyVar == "OPENROUTER_API_KEY" }), OpenRouter.env("OPENROUTER_API_KEY") != nil {
+            accounts.append(Account(id: UUID().uuidString, provider: .openrouter, source: .apiKey, label: "OpenRouter",
+                                    keyVar: "OPENROUTER_API_KEY"))
+            changed = true
+        }
         if changed { save(); Task { await identify() } }
     }
 
@@ -77,7 +83,7 @@ final class Store: ObservableObject {
                     accounts[i].remoteId = c.accountId
                     accounts[i].email = jwtClaims(c.idToken)["email"] as? String
                 }
-            case .signIn: break
+            case .signIn, .apiKey: break
             }
         }
         save()
@@ -103,7 +109,7 @@ final class Store: ObservableObject {
         for (u, a) in results {
             var u = u
             let old = usage[a.id]
-            if u.error != nil, u.needsAuth != true, let old, !old.windows.isEmpty {
+            if u.error != nil, u.needsAuth != true, let old, old.hasData {
                 // Keep showing the last good numbers through a transient failure.
                 let err = u.error
                 u = old; u.error = err
@@ -199,13 +205,17 @@ final class Store: ObservableObject {
         save()
     }
 
-    /// Signed-in accounts are deleted; CLI ones are hidden so discovery doesn't bring them back.
+    /// Signed-in accounts are deleted; discovered ones are hidden so discovery doesn't bring them back.
     func remove(_ id: String) {
         guard let i = accounts.firstIndex(where: { $0.id == id }) else { return }
-        if accounts[i].source == .signIn { accounts.remove(at: i) } else { accounts[i].hidden = true }
+        if Self.discovered(accounts[i]) { accounts[i].hidden = true } else { accounts.remove(at: i) }
         usage[id] = nil
         save()
         JSON.save(Array(usage.values), Paths.usage)
+    }
+
+    static func discovered(_ a: Account) -> Bool {
+        a.source == .claudeCode || a.source == .codexCLI || (a.source == .apiKey && a.keyVar != nil)
     }
 
     func restore(_ id: String) {
@@ -250,6 +260,7 @@ struct Flash: Equatable {
         provider = a.provider
         switch a.kind {
         case .reset, .credits, .leftover, .announced: tone = .accent
+        case .balance: tone = .warn
         case .threshold: tone = (a.percent ?? 0) >= 100 ? .bad : (a.percent ?? 0) >= 85 ? .warn : .accent
         case .auth: tone = .warn
         }
