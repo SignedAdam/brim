@@ -23,9 +23,11 @@ enum Snapshot {
                 model.notchWidth = 160; model.notchHeight = 28
                 if args.contains("--external") { model.hasNotch = false; model.notchWidth = 14; model.notchHeight = 19; model.topInset = 3 }
                 model.open = args.contains("--open")
-                let size = CGSize(width: 640, height: model.open ? 290 : 90)
+                let size = CGSize(width: 820, height: model.open ? 290 : 90)
                 let view = ZStack(alignment: .top) {
-                    Desktop(menuHeight: model.hasNotch ? model.notchHeight : 25)
+                    Desktop(menuHeight: model.hasNotch ? model.notchHeight : 25,
+                            clear: (model.open ? model.openSize(rows: store.visible.count, footer: true).width
+                                               : model.collapsedSize.width) / 2)
                     NotchView(store: store, model: model)
                         .frame(width: NotchController.canvas.width, height: NotchController.canvas.height)
                         .frame(width: size.width, height: size.height, alignment: .top)
@@ -84,23 +86,38 @@ enum Snapshot {
     }
 }
 
-/// A menu bar over a wallpaper, so the notch is judged in context.
+/// A menu bar over a wallpaper, so the notch is judged in context. Menus sit left and status
+/// items right, both kept clear of the shape (`clear` = its half-width), like a real menu bar.
 struct Desktop: View {
     let menuHeight: CGFloat
+    var clear: CGFloat = 160
+
     var body: some View {
-        ZStack(alignment: .top) {
-            LinearGradient(colors: [Color(red: 0.16, green: 0.22, blue: 0.42), Color(red: 0.55, green: 0.36, blue: 0.52),
-                                    Color(red: 0.93, green: 0.62, blue: 0.48)], startPoint: .topLeading, endPoint: .bottomTrailing)
-            Rectangle().fill(Color(white: 0.12).opacity(0.55)).frame(height: menuHeight)
-            HStack(spacing: 18) {
-                Image(systemName: "apple.logo").font(.system(size: 13))
-                Text("Finder").fontWeight(.bold)
-                Text("File"); Text("Edit"); Text("View")
-                Spacer()
-                Image(systemName: "wifi"); Image(systemName: "battery.75percent"); Text("Sat 17 Oct  14:20")
+        GeometryReader { g in
+            let side = g.size.width / 2 - clear - 14
+            ZStack(alignment: .top) {
+                LinearGradient(colors: [Color(red: 0.16, green: 0.22, blue: 0.42), Color(red: 0.55, green: 0.36, blue: 0.52),
+                                        Color(red: 0.93, green: 0.62, blue: 0.48)], startPoint: .topLeading, endPoint: .bottomTrailing)
+                Rectangle().fill(Color(white: 0.12).opacity(0.55)).frame(height: menuHeight)
+                HStack(spacing: 0) {
+                    HStack(spacing: 16) {
+                        Image(systemName: "apple.logo").font(.system(size: 13))
+                        Text("Finder").fontWeight(.bold)
+                        Text("File"); Text("Edit")
+                    }
+                    .padding(.leading, 14)
+                    .frame(width: side, alignment: .leading).clipped()
+                    Spacer()
+                    HStack(spacing: 14) {
+                        Image(systemName: "wifi"); Image(systemName: "battery.75percent"); Text("Sat 17 Oct  14:20")
+                    }
+                    .padding(.trailing, 14)
+                    .frame(width: side, alignment: .trailing).clipped()
+                }
+                .font(.system(size: 13)).foregroundStyle(.white.opacity(0.9))
+                .lineLimit(1)
+                .frame(height: menuHeight)
             }
-            .font(.system(size: 13)).foregroundStyle(.white.opacity(0.9))
-            .padding(.horizontal, 14).frame(height: menuHeight)
         }
     }
 }
