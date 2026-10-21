@@ -31,7 +31,7 @@ final class NotchModel: ObservableObject {
     /// Without a notch the shape floats a little below the top edge as a pill.
     @Published var topInset: CGFloat = 0
 
-    static let wing: CGFloat = 60
+    static let wing: CGFloat = 66
     static let topRadius: CGFloat = 8
     static let openWidth: CGFloat = 404
     static let rowHeight: CGFloat = 34
@@ -45,7 +45,7 @@ final class NotchModel: ObservableObject {
         var body = rows == 0 ? 64 : 14 + CGFloat(rows) * Self.rowHeight + 4
         if footer { body += 22 }
         let header = hasNotch ? notchHeight : 32
-        return CGSize(width: max(Self.openWidth, notchWidth + 2 * Self.wing + 40), height: header + body)
+        return CGSize(width: max(Self.openWidth, notchWidth + 2 * 100 + 2 * Self.topRadius), height: header + body)
     }
 }
 
@@ -130,19 +130,26 @@ struct NotchView: View {
         .environment(\.colorScheme, .dark)
     }
 
-    /// The band beside the camera: a miniature of the panel on the left, the next reset on the right.
+    /// The band beside the camera, laid out as three fixed columns: left wing | notch | right wing.
+    /// The middle column is exactly the camera housing's width and holds nothing; each wing is
+    /// whatever is left of the shape, and its content is clipped to it, so it can never slide under.
     private var header: some View {
-        HStack(spacing: 0) {
+        let t = model.hasNotch ? NotchModel.topRadius : 0
+        let wing = max(0, (size.width - 2 * t - model.notchWidth) / 2)
+        let edge: CGFloat = model.open ? 14 : (model.hasNotch ? 12 : 8)
+        return HStack(spacing: 0) {
             Group {
                 if model.open {
-                    Text(updatedText).font(Theme.ui(10)).foregroundStyle(Theme.faint)
+                    Text(updatedText).font(Theme.ui(10)).foregroundStyle(Theme.faint).lineLimit(1)
                         .transition(.opacity.animation(.easeOut(duration: 0.15).delay(0.08)))
                 } else {
                     Minis(store: store).transition(.opacity)
                 }
             }
-            .padding(.leading, model.open ? 16 : (model.hasNotch ? 14 : 10))
-            Spacer(minLength: model.notchWidth)
+            .padding(.leading, edge)
+            .frame(width: wing, alignment: .leading)
+            .clipped()
+            Color.clear.frame(width: model.notchWidth)
             Group {
                 if model.open {
                     HStack(spacing: 2) {
@@ -155,10 +162,13 @@ struct NotchView: View {
                     .transition(.opacity.animation(.easeOut(duration: 0.15).delay(0.08)))
                 } else {
                     NextReset(store: store)
+                        .lineLimit(1).minimumScaleFactor(0.75)
                         .transition(.opacity)
                 }
             }
-            .padding(.trailing, model.open ? 10 : (model.hasNotch ? 14 : 10))
+            .padding(.trailing, model.open ? 8 : edge)
+            .frame(width: wing, alignment: .trailing)
+            .clipped()
         }
         .frame(height: model.headerHeight)
     }
@@ -273,7 +283,6 @@ struct NextReset: View {
                     .font(.system(size: 8, weight: .bold))
                 Text(Fmt.reset(w.resetsAt, now: store.now)).font(Theme.num(11.5, .semibold)).lineLimit(1)
             }
-            .fixedSize()
             .foregroundStyle(blocked ? Theme.warn : Theme.text.opacity(0.8))
             .help(blocked ? "A maxed-out window resets in \(Fmt.reset(w.resetsAt, now: store.now))" : "Next reset")
         }

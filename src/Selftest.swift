@@ -105,6 +105,21 @@ enum Selftest {
         let p = PKCE()
         expect(p.verifier.count >= 43 && !p.challenge.contains("=") && p.state.count > 10, "pkce shape")
 
+        // Notch geometry: the wings always leave the camera housing's width free.
+        MainActor.assumeIsolated {
+            let m = NotchModel()
+            for w in [150.0, 160, 185, 200] {
+                m.notchWidth = w
+                let c = m.collapsedSize
+                let wing = (c.width - 2 * NotchModel.topRadius - w) / 2
+                expect(wing >= 54, "collapsed wing \(wing) fits the reset label for notch \(w)")
+                m.open = true
+                let o = m.openSize(rows: 3)
+                expect((o.width - 2 * NotchModel.topRadius - w) / 2 >= 100, "open wing fits the buttons for notch \(w)")
+                m.open = false
+            }
+        }
+
         print(failures == 0 ? "selftest ok" : "selftest: \(failures) failed")
         return failures == 0
     }
