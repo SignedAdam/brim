@@ -622,10 +622,10 @@ struct ToolChip: View {
                 if chip.busy {
                     ProgressView().controlSize(.mini).scaleEffect(0.55)
                 } else {
-                    ToolGlyph(tool: chip.tool).foregroundStyle(hover ? Theme.text : Theme.dim)
+                    ToolGlyph(tool: chip.tool).frame(width: 13, height: 13).opacity(hover ? 1 : 0.75)
                 }
             }
-            .frame(width: 22, height: 15)
+            .frame(width: 20, height: 17)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -640,11 +640,29 @@ struct ToolGlyph: View {
     let tool: Tool
 
     var body: some View {
-        Text(Self.letters[tool] ?? "?").font(.system(size: 8.5, weight: .bold)).kerning(0.3)
+        if let img = Self.icons[tool] {
+            Image(nsImage: img).resizable().interpolation(.high).aspectRatio(contentMode: .fit)
+        } else {
+            Text(tool.name.prefix(1)).font(.system(size: 9, weight: .bold))
+        }
     }
 
-    /// Same size for every tool: two-letter monograms.
-    static let letters: [Tool: String] = [.claudeCode: "CC", .codex: "CX", .hermes: "HA", .omp: "OMP"]
+    /// Each app's own icon: from its .app on this Mac, OMP's from its repo.
+    static let icons: [Tool: NSImage] = {
+        var out: [Tool: NSImage] = [:]
+        let apps: [Tool: [String]] = [.claudeCode: ["/Applications/Claude.app"],
+                                      .codex: ["/Applications/Codex.app", "/Applications/ChatGPT.app"],
+                                      .hermes: ["/Applications/Hermes.app"]]
+        for (t, paths) in apps {
+            if let p = paths.first(where: { FileManager.default.fileExists(atPath: $0) }) {
+                out[t] = NSWorkspace.shared.icon(forFile: p)
+            }
+        }
+        out[.omp] = NSImage(data: Data(Self.ompSVG.utf8))
+        return out
+    }()
+
+    static let ompSVG = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 120 90\" width=\"120\" height=\"90\">   <!-- Pi symbol with plugin connector -->   <!-- Horizontal bar -->   <rect x=\"10\" y=\"8\" width=\"100\" height=\"12\" rx=\"2\" fill=\"#fafafa\"/>   <!-- Left leg -->   <rect x=\"25\" y=\"20\" width=\"12\" height=\"62\" rx=\"2\" fill=\"#fafafa\"/>   <!-- Right leg -->   <rect x=\"75\" y=\"20\" width=\"12\" height=\"45\" rx=\"2\" fill=\"#fafafa\"/>   <!-- Plugin connector -->   <rect x=\"71\" y=\"55\" width=\"20\" height=\"16\" rx=\"3\" fill=\"#f97316\"/>   <rect x=\"76\" y=\"59\" width=\"3\" height=\"8\" rx=\"1\" fill=\"#0d0d0d\"/>   <rect x=\"82\" y=\"59\" width=\"3\" height=\"8\" rx=\"1\" fill=\"#0d0d0d\"/>   <!-- Decorative dots -->   <circle cx=\"18\" cy=\"14\" r=\"2\" fill=\"#f97316\" opacity=\"0.8\"/>   <circle cx=\"102\" cy=\"14\" r=\"2\" fill=\"#f97316\" opacity=\"0.8\"/> </svg> "
 }
 
 
