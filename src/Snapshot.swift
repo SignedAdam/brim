@@ -6,7 +6,7 @@ import SwiftUI
 
 enum Snapshot {
     static func run(_ args: [String]) {
-        guard let out = args.first(where: { !$0.hasPrefix("--") }) else { print("usage: brim snapshot <png> [--open] [--flash] [--live] [--settings]"); exit(2) }
+        guard let out = args.first(where: { !$0.hasPrefix("--") }) else { print("usage: brim snapshot <png> [--open] [--hover] [--flash] [--live] [--settings]"); exit(2) }
         MainActor.assumeIsolated {
             NSApplication.shared.setActivationPolicy(.accessory)
             let store = args.contains("--live") ? Store(load: true) : sample()
@@ -22,7 +22,8 @@ enum Snapshot {
                 let model = NotchModel()
                 model.notchWidth = 160; model.notchHeight = 28
                 if args.contains("--external") { model.hasNotch = false; model.notchWidth = 14; model.notchHeight = 19; model.topInset = 3 }
-                model.open = args.contains("--open")
+                model.open = args.contains("--open") || args.contains("--hover")
+                if args.contains("--hover") { model.hoveredRow = store.visible.first { $0.label == "Studio" }?.id }
                 let size = CGSize(width: 820, height: model.open ? 290 : 90)
                 let view = ZStack(alignment: .top) {
                     Desktop(menuHeight: model.hasNotch ? model.notchHeight : 25,
@@ -76,10 +77,19 @@ enum Snapshot {
         ]
         for (i, r) in rows.enumerated() {
             let id = "sample-\(i)"
-            s.accounts.append(Account(id: id, provider: r.1, source: .signIn, label: r.0, plan: r.2))
+            s.accounts.append(Account(id: id, provider: r.1, source: .signIn, label: r.0, plan: r.2, remoteId: id))
             s.usage[id] = Usage(accountId: id, fetchedAt: now.addingTimeInterval(-50),
                                 windows: [w(.session, r.3, r.4), w(.weekly, r.5, r.6)], plan: r.2, resetCredits: r.7)
         }
+        // Personal in Claude Code and OMP, Studio in Hermes, ChatGPT everywhere; Auernet's OMP login died.
+        func hold(_ t: Tool, _ p: Provider, _ i: Int, dead: String? = nil) -> Holding {
+            let f = Family(provider: p, access: "sample-\(t.rawValue)-\(i)", accountId: "sample-\(i)")
+            return Holding(tool: t, provider: p, family: f, dead: dead, account: f.key)
+        }
+        s.installed = Tool.allCases
+        s.holdings = [hold(.claudeCode, .claude, 0), hold(.omp, .claude, 0), hold(.hermes, .claude, 1),
+                      hold(.codex, .codex, 2), hold(.hermes, .codex, 2), hold(.omp, .codex, 2),
+                      hold(.omp, .claude, 3, dead: "refresh rejected (invalid_grant)")]
         s.accounts.append(Account(id: "sample-or", provider: .openrouter, source: .apiKey, label: "OpenRouter"))
         s.usage["sample-or"] = Usage(accountId: "sample-or", fetchedAt: now.addingTimeInterval(-50),
                                      balance: Balance(remaining: 42.18, total: 100, today: 3.27, week: 18.9))
