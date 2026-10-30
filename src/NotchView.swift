@@ -14,6 +14,14 @@ enum Theme {
     static let claude = Color(red: 0.85, green: 0.47, blue: 0.34)
 
     static func level(_ pct: Double) -> Color { pct >= 100 ? bad : pct >= 85 ? warn : text }
+    /// Each provider's own colour: Claude's coral, ChatGPT's green, OpenRouter's indigo.
+    static func brand(_ p: Provider) -> Color {
+        switch p {
+        case .claude: return Color(red: 0.85, green: 0.47, blue: 0.34)
+        case .codex: return Color(red: 0.06, green: 0.70, blue: 0.53)
+        case .openrouter: return Color(red: 0.55, green: 0.58, blue: 1.0)
+        }
+    }
 
     static func mono(_ size: CGFloat, _ w: Font.Weight = .medium) -> Font { .system(size: size, weight: w, design: .monospaced) }
     /// Numbers: SF with tabular digits, so columns line up without a mono texture.
@@ -43,9 +51,10 @@ final class NotchModel: ObservableObject {
     /// The header band: the notch's height, or a roomier one for the floating pill once open.
     var headerHeight: CGFloat { hasNotch || !open ? notchHeight : 32 }
 
-    func openSize(rows: Int, footer: Bool = false) -> CGSize {
+    func openSize(rows: Int, footer: Bool = false, logins: Int = 0) -> CGSize {
         var body = rows == 0 ? 64 : 14 + CGFloat(rows) * Self.rowHeight + 4
         if footer { body += 22 }
+        if logins > 0 { body += 6 + Logins.headerHeight + CGFloat(logins) * Logins.rowHeight }
         let header = hasNotch ? notchHeight : 32
         return CGSize(width: max(Self.openWidth, notchWidth + 2 * 100 + 2 * Self.topRadius), height: header + body)
     }
@@ -89,7 +98,7 @@ struct NotchView: View {
     private var flashing: Bool { store.flash != nil && !model.open }
 
     private var size: CGSize {
-        if model.open { return model.openSize(rows: rows.count, footer: store.announcement != nil) }
+        if model.open { return model.openSize(rows: rows.count, footer: store.announcement != nil, logins: store.loginTools.count) }
         var s = model.collapsedSize
         if flashing { s.height += NotchModel.flashHeight; s.width = max(s.width, 360) }
         return s
@@ -188,8 +197,7 @@ struct NotchView: View {
                 .padding(.horizontal, 16)
                 .frame(height: 14, alignment: .bottom)
                 ForEach(rows) { a in
-                    Row(account: a, usage: store.usage[a.id], now: store.now, lowBalance: store.settings.lowBalance,
-                        chips: store.chips(a), hovering: model.hoveredRow == a.id) { store.switchTool($0, to: a) }
+                    Row(account: a, usage: store.usage[a.id], now: store.now, lowBalance: store.settings.lowBalance)
                         .frame(height: NotchModel.rowHeight)
                         .padding(.horizontal, 16)
                         .contentShape(Rectangle())
@@ -198,9 +206,15 @@ struct NotchView: View {
                             Button("Refresh") { Task { await store.refresh() } }
                             Button("Settings…", action: onSettings)
                             Divider()
+                            Button("Move Up") { store.shift(a.id, by: -1) }.disabled(rows.first?.id == a.id)
+                            Button("Move Down") { store.shift(a.id, by: 1) }.disabled(rows.last?.id == a.id)
+                            Divider()
                             Button("Remove \(a.label)") { store.remove(a.id) }
                         }
                 }
+            }
+            if !store.loginTools.isEmpty {
+                Logins(store: store).padding(.horizontal, 16).padding(.top, 6)
             }
             if let an = store.announcement {
                 Announced(item: an, now: store.now).frame(height: 18).padding(.horizontal, 16).padding(.top, 4)
@@ -263,7 +277,7 @@ struct Minis: View {
                 let pct = min(u?.peak ?? 0, 100)
                 ZStack(alignment: .leading) {
                     Capsule().fill(Theme.track)
-                    Capsule().fill(u?.needsAuth == true ? Theme.faint : Theme.level(pct))
+                    Capsule().fill(u?.needsAuth == true ? Theme.faint : pct >= 85 ? Theme.level(pct) : Theme.brand(a.provider))
                         .frame(width: u == nil ? 0 : max(h, 26 * pct / 100))
                 }
                 .frame(width: 26, height: h)
@@ -308,7 +322,7 @@ struct FlashLine: View {
 
     var body: some View {
         HStack(spacing: 7) {
-            if let p = flash.provider { Mark(provider: p).frame(width: 11, height: 11) }
+            if let p = flash.provider { Mark(provider: p, tint: Theme.brand(p)).frame(width: 11, height: 11) }
             Text(flash.text).font(Theme.ui(11.5)).foregroundStyle(Theme.text).lineLimit(1)
             Circle().fill(color).frame(width: 5, height: 5)
         }
@@ -342,7 +356,7 @@ struct Row: View {
     var body: some View {
         HStack(spacing: 0) {
             HStack(spacing: 8) {
-                Mark(provider: account.provider).frame(width: 13, height: 13)
+                Mark(provider: account.provider, tint: Theme.brand(account.provider)).frame(width: 13, height: 13)
                 VStack(alignment: .leading, spacing: 1) {
                     HStack(spacing: 5) {
                         Text(account.label).font(Theme.ui(12.5, .semibold)).foregroundStyle(Theme.text).lineLimit(1).layoutPriority(1)
@@ -364,8 +378,8 @@ struct Row: View {
                 Spend(today: usage?.balance?.today, week: usage?.balance?.week).frame(width: Self.meterWidth)
                 BalanceMeter(balance: usage?.balance, low: lowBalance).frame(width: Self.meterWidth).padding(.leading, Self.gap)
             } else {
-                Meter(window: usage?.session, now: now).frame(width: Self.meterWidth)
-                Meter(window: usage?.weekly, now: now).frame(width: Self.meterWidth).padding(.leading, Self.gap)
+                Meter(window: usage?.session, now: now, tint: Theme.brand(account.provider)).frame(width: Self.meterWidth)
+                Meter(window: usage?.weekly, now: now, tint: Theme.brand(account.provider)).frame(width: Self.meterWidth).padding(.leading, Self.gap)
             }
         }
     }
@@ -412,7 +426,7 @@ struct BalanceMeter: View {
                 ZStack(alignment: .leading) {
                     Capsule().fill(Theme.track)
                     if let p = balance?.usedPercent {
-                        Capsule().fill(isLow ? Theme.warn : Color.white.opacity(0.88))
+                        Capsule().fill(isLow ? Theme.warn : Theme.brand(.openrouter))
                             .frame(width: max(p > 0 ? 3 : 0, g.size.width * p / 100))
                     }
                 }
@@ -434,6 +448,7 @@ struct BalanceMeter: View {
 struct Meter: View {
     let window: UsageWindow?
     let now: Date
+    var tint: Color = Color.white.opacity(0.88)
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -472,7 +487,7 @@ struct Meter: View {
     }
 
     private func fill(_ w: UsageWindow) -> Color {
-        w.percent >= 85 ? Theme.level(w.percent) : Color.white.opacity(0.88)
+        w.percent >= 85 ? Theme.level(w.percent) : tint
     }
 
     private func pctColor(_ w: UsageWindow) -> Color {
@@ -634,6 +649,48 @@ struct ToolGlyph: View {
         case .codex: Image(systemName: "curlybraces").font(.system(size: 9.5, weight: .semibold))
         case .hermes: Image(systemName: "paperplane").font(.system(size: 9.5, weight: .semibold))
         case .omp: Text("π").font(.system(size: 12, weight: .semibold, design: .serif)).offset(y: -0.5)
+        }
+    }
+}
+
+
+/// "Logins": which account each tool uses, and a menu to move it to any other.
+struct Logins: View {
+    @ObservedObject var store: Store
+    static let rowHeight: CGFloat = 22
+    static let headerHeight: CGFloat = 14
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack { ColumnLabel("Logins"); Spacer() }.frame(height: Self.headerHeight, alignment: .bottom)
+            ForEach(store.loginTools, id: \.self) { t in
+                HStack(spacing: 0) {
+                    Text(t.name).font(Theme.ui(11.5)).foregroundStyle(Theme.dim)
+                        .frame(width: 96, alignment: .leading)
+                    Menu {
+                        ForEach(store.visible.filter { $0.provider == store.loginProvider(t) }) { a in
+                            Button {
+                                store.switchTool(t, to: a)
+                            } label: {
+                                Text(store.loginLabel(t) == a.label ? "✓ \(a.label)" : a.label)
+                            }
+                            .disabled(store.loginLabel(t) == a.label)
+                        }
+                    } label: {
+                        HStack(spacing: 4) {
+                            Text(store.isSwitching(t) ? "Switching…" : store.loginLabel(t))
+                                .font(Theme.ui(11.5, .semibold)).foregroundStyle(Theme.text).lineLimit(1)
+                            Image(systemName: "chevron.up.chevron.down").font(.system(size: 8, weight: .semibold))
+                                .foregroundStyle(Theme.faint)
+                        }
+                    }
+                    .menuStyle(.borderlessButton)
+                    .menuIndicator(.hidden)
+                    .fixedSize()
+                    Spacer()
+                }
+                .frame(height: Self.rowHeight)
+            }
         }
     }
 }

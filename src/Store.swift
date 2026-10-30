@@ -72,6 +72,22 @@ final class Store: ObservableObject {
     }
 
     /// The tool icons on an account's row.
+    /// Tools shown under "Logins": the Claude ones, then Codex.
+    var loginTools: [Tool] { [Tool.claudeCode, .hermes, .omp, .codex].filter { installed.contains($0) } }
+
+    func loginProvider(_ t: Tool) -> Provider { t == .codex ? .codex : .claude }
+
+    /// The account a tool uses right now, by name.
+    func loginLabel(_ t: Tool) -> String {
+        let here = holdings.filter { $0.tool == t && $0.provider == loginProvider(t) && $0.dead == nil }
+        if here.isEmpty { return "Not signed in" }
+        let keys = Set(here.map { $0.account ?? "?" })
+        guard keys.count == 1, let k = keys.first, k != "?" else { return keys.count > 1 ? "Mixed" : "Unknown account" }
+        return accounts.first { $0.key == k }?.label ?? here.first?.family.email ?? "Unknown account"
+    }
+
+    func isSwitching(_ t: Tool) -> Bool { switching.contains { $0.hasSuffix(":\(t.rawValue)") } }
+
     func chips(_ a: Account) -> [Chip] {
         guard let k = a.key else { return [] }
         return installed.filter { $0.providers.contains(a.provider) }.map { t in
@@ -79,7 +95,7 @@ final class Store: ObservableObject {
             let mine = here.filter { $0.account == k }
             let active = mine.contains { $0.dead == nil }
             let dead = mine.first { $0.dead != nil }?.dead
-            let other = here.contains { $0.account == nil } ? "holds a login Brim can't place" : nil
+            let other = here.contains { $0.account == nil } ? "is signed in to an account Brim doesn't know" : nil
             var help = t.name
             if active { help += " · \(a.label)" } else { help += " · switch to \(a.label)" }
             if let d = dead { help += "\nThis login is dead: \(d.prefix(90))" }
@@ -297,6 +313,13 @@ final class Store: ObservableObject {
     func restore(_ id: String) {
         update(id) { $0.hidden = false }
         Task { await refresh() }
+    }
+
+    /// Moves a visible account up (-1) or down (+1) one place.
+    func shift(_ id: String, by d: Int) {
+        let v = visible
+        guard let i = v.firstIndex(where: { $0.id == id }), v.indices.contains(i + d) else { return }
+        move(from: IndexSet(integer: i), to: d > 0 ? i + d + 1 : i + d)
     }
 
     func move(from: IndexSet, to: Int) {

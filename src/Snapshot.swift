@@ -24,7 +24,7 @@ enum Snapshot {
                 if args.contains("--external") { model.hasNotch = false; model.notchWidth = 14; model.notchHeight = 19; model.topInset = 3 }
                 model.open = args.contains("--open") || args.contains("--hover")
                 if args.contains("--hover") { model.hoveredRow = store.visible.first { $0.label == "Studio" }?.id }
-                let size = CGSize(width: 820, height: model.open ? 290 : 90)
+                let size = CGSize(width: 820, height: model.open ? 400 : 90)
                 let view = ZStack(alignment: .top) {
                     Desktop(menuHeight: model.hasNotch ? model.notchHeight : 25,
                             clear: (model.open ? model.openSize(rows: store.visible.count, footer: true).width
