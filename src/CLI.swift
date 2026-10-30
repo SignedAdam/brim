@@ -11,7 +11,12 @@ enum CLI {
           brim status [--json] [--fresh]
                                     usage per account. --fresh fetches now instead of
                                     reading what the running app saw last
-          brim list                 accounts and where their login comes from
+          brim list                 accounts and which tools hold them
+          brim where [--json]       what each tool (Claude Code, Codex, Hermes, OMP) is
+                                    signed in as, and the logins Brim has parked
+          brim switch <account> claude-code|codex|hermes|omp
+                                    sign that tool in as <account>; the previous login is
+                                    parked, so switching back needs no new sign-in
           brim add claude|codex [--label NAME]
                                     sign in to another account in the browser
           brim add openrouter [--env VAR] [--label NAME]
@@ -37,7 +42,15 @@ enum CLI {
         return try result!.get()
     }
 
-    static func accounts() -> [Account] { JSON.load([Account].self, Paths.accounts) ?? [] }
+    static func accounts() -> [Account] { Accounts.load() }
+
+    /// A store that has looked at what the tools hold and added rows for their accounts.
+    static func scanned() -> Store {
+        let st = MainActor.assumeIsolated { Store(load: true) }
+        try? await_ { await st.scan() }
+        MainActor.assumeIsolated { st.discover() }
+        return st
+    }
 
     static func find(_ q: String, in list: [Account]) -> Int? {
         let l = q.lowercased()
@@ -52,12 +65,8 @@ enum CLI {
     }
 
     static func status(_ args: [String]) {
-        var list = accounts()
-        if list.isEmpty {
-            // First run without the app: pick up local logins so `status --fresh` works straight away.
-            let s = MainActor.assumeIsolated { () -> [Account] in let st = Store(load: true); st.discover(); return st.accounts }
-            list = s
-        }
+        let st = scanned()
+        var list = MainActor.assumeIsolated { st.accounts }
         list = list.filter { !$0.isHidden }
         var usage: [String: Usage] = Dictionary((JSON.load([Usage].self, Paths.usage) ?? []).map { ($0.accountId, $0) }, uniquingKeysWith: { $1 })
         if args.contains("--fresh") || usage.isEmpty {
@@ -73,10 +82,10 @@ enum CLI {
                 }
                 usage = Dictionary((JSON.load([Usage].self, Paths.usage) ?? []).map { ($0.accountId, $0) }, uniquingKeysWith: { $1 })
             } else {
-            let todo = list
+            let todo = MainActor.assumeIsolated { list.map { ($0, st.borrowed($0, now: Date())) } }
             let results: [(Usage, Account)] = (try? await_ { () async -> [(Usage, Account)] in
                 await withTaskGroup(of: (Usage, Account).self) { g in
-                    for a in todo { g.addTask { await Fetcher.fetch(a) } }
+                    for (a, b) in todo { g.addTask { await Fetcher.fetch(a, borrowed: b) } }
                     var out: [(Usage, Account)] = []
                     for await r in g { out.append(r) }
                     return out
@@ -161,10 +170,62 @@ enum CLI {
     }
 
     static func list() {
-        for a in accounts() {
-            let src = a.source == .claudeCode ? "Claude Code login" : a.source == .codexCLI ? "Codex CLI login"
-                : a.source == .apiKey ? (a.keyVar.map { "key from $\($0)" } ?? "stored key") : "signed in to brim"
-            print("\(a.id.prefix(8))  \(a.label)\(a.isHidden ? " (hidden)" : "")  \(a.provider.name) · \(a.email ?? "-") · \(src)")
+        let st = scanned()
+        let (all, holdings) = MainActor.assumeIsolated { (st.accounts, st.holdings) }
+        for a in all {
+            let tools = holdings.filter { $0.account != nil && $0.account == a.key && $0.dead == nil }.map(\.tool.name)
+            var src = a.source == .signIn ? ["signed in to brim"] : []
+            if a.source == .apiKey { src = [a.keyVar.map { "key from $\($0)" } ?? "stored key"] }
+            else { src.append(tools.isEmpty ? "no tool holds it" : "in " + Array(Set(tools)).sorted().joined(separator: ", ")) }
+            print("\(a.id.prefix(8))  \(a.label)\(a.isHidden ? " (hidden)" : "")  \(a.provider.name) · \(a.email ?? "-") · \(src.joined(separator: ", "))")
+        }
+    }
+
+    static func whereNow(_ args: [String]) {
+        let st = scanned()
+        let w = MainActor.assumeIsolated { Where.now(accounts: st.accounts, holdings: st.holdings, vault: Vault.load()) }
+        if args.contains("--json") || isatty(1) == 0 {
+            let e = JSONEncoder()
+            e.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+            e.dateEncodingStrategy = .iso8601
+            print(String(decoding: try! e.encode(w), as: UTF8.self))
+            return
+        }
+        let now = Date()
+        func exp(_ d: Date?) -> String {
+            guard let d else { return "" }
+            return d > now ? "  expires in \(Fmt.duration(d.timeIntervalSince(now)))" : "  expired"
+        }
+        for t in w.tools {
+            let place = t.location.map { " [\($0)]" } ?? ""
+            let who = t.label ?? t.email ?? "-"
+            print("\(t.tool.name)\(place)  \(t.provider.name)  \(who)  \(t.state.prefix(120))\(exp(t.expiresAt))")
+        }
+        if w.tools.isEmpty { print("no tool on this Mac holds a Claude or Codex login") }
+        for s in w.vault {
+            print("vault  \(s.label ?? s.account) for \(s.tool.name)\(s.home.map { " [\($0)]" } ?? "")  \(s.state)\(exp(s.expiresAt))")
+        }
+    }
+
+    static func switchTool(_ args: [String]) {
+        guard args.count == 2, let tool = Tool(rawValue: args[1]) else {
+            print("usage: brim switch <account> claude-code|codex|hermes|omp"); exit(2)
+        }
+        let st = scanned()
+        let list = MainActor.assumeIsolated { st.accounts }
+        guard let i = find(args[0], in: list) else { print("no account \(args[0])"); exit(1) }
+        let a = list[i]
+        if Switcher.needsSignIn(tool, a) {
+            print("Opening your browser to sign \(tool.name) in as \(a.label)…")
+        }
+        do {
+            let line = try await_ { try await Switcher.run(tool, to: a) }
+            print(line)
+            if let p = tool.pickup { print(p) }
+            notify()
+        } catch {
+            FileHandle.standardError.write(Data("brim: switching \(tool.name) to \(a.label) failed: \(error)\n".utf8))
+            exit(1)
         }
     }
 
@@ -196,12 +257,10 @@ enum CLI {
     }
 
     static func save(_ a: Account) {
-        var list = accounts()
-        if let r = a.remoteId, let d = list.first(where: { $0.provider == a.provider && $0.remoteId == r && !$0.isHidden }) {
-            print("already tracked as \(d.label)"); exit(1)
-        }
-        list.append(a)
-        JSON.save(list, Paths.accounts)
+        do {
+            let list = try Accounts.adding(a, to: accounts())
+            JSON.save(list, Paths.accounts)
+        } catch { print(error); exit(1) }
         notify()
         print("added \(a.label)\(a.email.map { " (\($0))" } ?? "")")
     }
@@ -217,12 +276,12 @@ enum CLI {
 
     static func remove(_ args: [String]) {
         guard let q = args.first else { print("usage: brim remove <account>"); exit(2) }
-        var list = accounts()
+        let st = scanned()
+        let list = MainActor.assumeIsolated { st.accounts }
         guard let i = find(q, in: list) else { print("no account \(q)"); exit(1) }
-        let name = list[i].label
-        if MainActor.assumeIsolated({ Store.discovered(list[i]) }) { list[i].hidden = true } else { list.remove(at: i) }
-        JSON.save(list, Paths.accounts); notify()
-        print("removed \(name)")
+        MainActor.assumeIsolated { st.remove(list[i].id) }
+        notify()
+        print("removed \(list[i].label)")
     }
 
     static func alerts(_ args: [String]) {
