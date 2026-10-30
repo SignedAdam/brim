@@ -4,12 +4,15 @@ import Foundation
 
 enum Selftest {
     static var failures = 0
+    static var checks = 0
 
     static func expect(_ ok: Bool, _ what: String, line: Int = #line) {
+        checks += 1
         if !ok { failures += 1; print("  FAIL \(what) (line \(line))") }
     }
 
     static func run() -> Bool {
+        setvbuf(stdout, nil, _IOLBF, 0)    // so a crash can't swallow the FAIL lines before it
         let now = Date(timeIntervalSince1970: 1_800_000_000)
 
         // Claude: the newer `limits` list.
@@ -135,7 +138,10 @@ enum Selftest {
             }
         }
 
-        print(failures == 0 ? "selftest ok" : "selftest: \(failures) failed")
+        migration()
+        switching()
+
+        print(failures == 0 ? "selftest ok (\(checks) checks)" : "selftest: \(failures) of \(checks) checks failed")
         return failures == 0
     }
 }
