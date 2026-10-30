@@ -30,10 +30,12 @@ final class NotchModel: ObservableObject {
     @Published var hasNotch = true
     /// Without a notch the shape floats a little below the top edge as a pill.
     @Published var topInset: CGFloat = 0
+    /// The account row under the pointer: it shows the tools it could switch.
+    @Published var hoveredRow: String?
 
     static let wing: CGFloat = 66
     static let topRadius: CGFloat = 8
-    static let openWidth: CGFloat = 404
+    static let openWidth: CGFloat = 440
     static let rowHeight: CGFloat = 34
     static let flashHeight: CGFloat = 26
 
@@ -186,9 +188,12 @@ struct NotchView: View {
                 .padding(.horizontal, 16)
                 .frame(height: 14, alignment: .bottom)
                 ForEach(rows) { a in
-                    Row(account: a, usage: store.usage[a.id], now: store.now, lowBalance: store.settings.lowBalance)
+                    Row(account: a, usage: store.usage[a.id], now: store.now, lowBalance: store.settings.lowBalance,
+                        chips: store.chips(a), hovering: model.hoveredRow == a.id) { store.switchTool($0, to: a) }
                         .frame(height: NotchModel.rowHeight)
                         .padding(.horizontal, 16)
+                        .contentShape(Rectangle())
+                        .onHover { model.hoveredRow = $0 ? a.id : (model.hoveredRow == a.id ? nil : model.hoveredRow) }
                         .contextMenu {
                             Button("Refresh") { Task { await store.refresh() } }
                             Button("Settings…", action: onSettings)
@@ -327,6 +332,9 @@ struct Row: View {
     let usage: Usage?
     let now: Date
     var lowBalance: Double = 5
+    var chips: [Chip] = []
+    var hovering = false
+    var onSwitch: (Tool) -> Void = { _ in }
 
     static let meterWidth: CGFloat = 100
     static let gap: CGFloat = 16
@@ -337,11 +345,12 @@ struct Row: View {
                 Mark(provider: account.provider).frame(width: 13, height: 13)
                 VStack(alignment: .leading, spacing: 1) {
                     HStack(spacing: 5) {
-                        Text(account.label).font(Theme.ui(12.5, .semibold)).foregroundStyle(Theme.text).lineLimit(1)
+                        Text(account.label).font(Theme.ui(12.5, .semibold)).foregroundStyle(Theme.text).lineLimit(1).layoutPriority(1)
                         if let c = usage?.resetCredits, c > 0 {
                             Text("\(c) reset\(c == 1 ? "" : "s")").font(Theme.ui(9.5, .semibold)).foregroundStyle(Theme.accent)
                                 .help("\(c) limit reset\(c == 1 ? "" : "s") banked with OpenAI")
                         }
+                        ToolChips(chips: chips, hovering: hovering, onSwitch: onSwitch)
                     }
                     Text(subtitle).font(Theme.ui(10)).foregroundStyle(Theme.faint).lineLimit(1)
                 }
@@ -565,4 +574,66 @@ struct Mark: View {
         }
         return out
     }()
+}
+
+/// The tools an account is signed in to, bright. On hover the others show dim; a click on one
+/// switches that tool to this account.
+struct ToolChips: View {
+    let chips: [Chip]
+    let hovering: Bool
+    let onSwitch: (Tool) -> Void
+
+    var body: some View {
+        HStack(spacing: 3) {
+            ForEach(chips.filter { hovering || $0.active || $0.busy || $0.mine != nil }) { c in
+                ToolChip(chip: c) { if !c.active { onSwitch(c.tool) } }
+                    .transition(.opacity)
+            }
+        }
+        .animation(.easeOut(duration: 0.12), value: hovering)
+    }
+}
+
+struct ToolChip: View {
+    let chip: Chip
+    let action: () -> Void
+    @State private var hover = false
+
+    var body: some View {
+        Button(action: action) {
+            ZStack {
+                if chip.busy {
+                    ProgressView().controlSize(.mini).scaleEffect(0.6)
+                } else {
+                    ToolGlyph(tool: chip.tool).foregroundStyle(color)
+                }
+            }
+            .frame(width: 13, height: 13)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(chip.busy)
+        .onHover { hover = $0 }
+        .help(chip.help)
+    }
+
+    private var color: Color {
+        if chip.mine != nil || (chip.other != nil && !chip.active) { return Theme.warn.opacity(chip.active || hover ? 0.9 : 0.6) }
+        if chip.active { return Theme.text }
+        return hover ? Theme.text : Theme.faint
+    }
+}
+
+/// Small monochrome marks for the tools: SF Symbols, and π for OMP (oh-my-pi).
+struct ToolGlyph: View {
+    let tool: Tool
+
+    var body: some View {
+        switch tool {
+        case .claudeCode: Image(systemName: "terminal").font(.system(size: 9.5, weight: .semibold))
+        case .codex: Image(systemName: "curlybraces").font(.system(size: 9.5, weight: .semibold))
+        case .hermes: Image(systemName: "paperplane").font(.system(size: 9.5, weight: .semibold))
+        case .omp: Text("π").font(.system(size: 12, weight: .semibold, design: .serif)).offset(y: -0.5)
+        }
+    }
 }
