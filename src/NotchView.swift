@@ -98,7 +98,7 @@ struct NotchView: View {
     private var flashing: Bool { store.flash != nil && !model.open }
 
     private var size: CGSize {
-        if model.open { return model.openSize(rows: rows.count, footer: store.announcement != nil, logins: store.loginTools.count) }
+        if model.open { return model.openSize(rows: rows.count, footer: store.announcement != nil) }
         var s = model.collapsedSize
         if flashing { s.height += NotchModel.flashHeight; s.width = max(s.width, 360) }
         return s
@@ -197,7 +197,8 @@ struct NotchView: View {
                 .padding(.horizontal, 16)
                 .frame(height: 14, alignment: .bottom)
                 ForEach(rows) { a in
-                    Row(account: a, usage: store.usage[a.id], now: store.now, lowBalance: store.settings.lowBalance)
+                    Row(account: a, usage: store.usage[a.id], now: store.now, lowBalance: store.settings.lowBalance,
+                        chips: store.chips(a), hovering: model.hoveredRow == a.id) { store.switchTool($0, to: a) }
                         .frame(height: NotchModel.rowHeight)
                         .padding(.horizontal, 16)
                         .contentShape(Rectangle())
@@ -212,9 +213,6 @@ struct NotchView: View {
                             Button("Remove \(a.label)") { store.remove(a.id) }
                         }
                 }
-            }
-            if !store.loginTools.isEmpty {
-                Logins(store: store).padding(.horizontal, 16).padding(.top, 6)
             }
             if let an = store.announcement {
                 Announced(item: an, now: store.now).frame(height: 18).padding(.horizontal, 16).padding(.top, 4)
@@ -366,7 +364,7 @@ struct Row: View {
                         }
                         ToolChips(chips: chips, hovering: hovering, onSwitch: onSwitch)
                     }
-                    Text(subtitle).font(Theme.ui(10)).foregroundStyle(Theme.faint).lineLimit(1)
+                    Text(subtitle).font(Theme.ui(10)).foregroundStyle(Theme.faint).lineLimit(1).help(Fmt.plan(account.plan ?? usage?.plan) ?? "")
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -391,6 +389,9 @@ struct Row: View {
         if let m = usage?.windows.first(where: { $0.kind == .model && $0.percent >= 40 }) { parts.append("\(m.label) \(Int(m.percent))%") }
         if parts.isEmpty { parts.append(account.provider.name) }
         if usage?.error != nil, usage?.needsAuth != true, !(usage?.windows.isEmpty ?? true) { parts.append("stale") }
+        // Where it's in use says more than the plan; the plan moves to the tooltip then.
+        let used = chips.filter(\.active).map(\.tool.name)
+        if !used.isEmpty { return "In " + used.joined(separator: ", ") }
         return parts.joined(separator: " · ")
     }
 }
@@ -600,8 +601,8 @@ struct ToolChips: View {
 
     var body: some View {
         HStack(spacing: 3) {
-            ForEach(chips.filter { hovering || $0.active || $0.busy || $0.mine != nil }) { c in
-                ToolChip(chip: c) { if !c.active { onSwitch(c.tool) } }
+            ForEach(chips.filter { (hovering && !$0.active) || $0.busy }) { c in
+                ToolChip(chip: c) { onSwitch(c.tool) }
                     .transition(.opacity)
             }
         }
@@ -617,25 +618,20 @@ struct ToolChip: View {
     var body: some View {
         Button(action: action) {
             ZStack {
+                RoundedRectangle(cornerRadius: 4).fill(Color.white.opacity(hover ? 0.22 : 0.1))
                 if chip.busy {
-                    ProgressView().controlSize(.mini).scaleEffect(0.6)
+                    ProgressView().controlSize(.mini).scaleEffect(0.55)
                 } else {
-                    ToolGlyph(tool: chip.tool).foregroundStyle(color)
+                    ToolGlyph(tool: chip.tool).foregroundStyle(hover ? Theme.text : Theme.dim)
                 }
             }
-            .frame(width: 13, height: 13)
+            .frame(width: 22, height: 15)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .disabled(chip.busy)
         .onHover { hover = $0 }
-        .help(chip.help)
-    }
-
-    private var color: Color {
-        if chip.mine != nil || (chip.other != nil && !chip.active) { return Theme.warn.opacity(chip.active || hover ? 0.9 : 0.6) }
-        if chip.active { return Theme.text }
-        return hover ? Theme.text : Theme.faint
+        .help("Switch \(chip.tool.name) to this account")
     }
 }
 
@@ -644,13 +640,11 @@ struct ToolGlyph: View {
     let tool: Tool
 
     var body: some View {
-        switch tool {
-        case .claudeCode: Image(systemName: "terminal").font(.system(size: 9.5, weight: .semibold))
-        case .codex: Image(systemName: "curlybraces").font(.system(size: 9.5, weight: .semibold))
-        case .hermes: Image(systemName: "paperplane").font(.system(size: 9.5, weight: .semibold))
-        case .omp: Text("π").font(.system(size: 12, weight: .semibold, design: .serif)).offset(y: -0.5)
-        }
+        Text(Self.letters[tool] ?? "?").font(.system(size: 8.5, weight: .bold)).kerning(0.3)
     }
+
+    /// Same size for every tool: two-letter monograms.
+    static let letters: [Tool: String] = [.claudeCode: "CC", .codex: "CX", .hermes: "HA", .omp: "OMP"]
 }
 
 
