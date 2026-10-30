@@ -112,7 +112,7 @@ final class NotchController {
     /// The black shape's current rect in screen coordinates.
     private func shapeRect(open: Bool) -> NSRect {
         guard current != nil else { return .zero }
-        let size = open ? model.openSize(rows: store.visible.count, footer: store.announcement != nil, logins: store.loginTools.count) : model.collapsedSize
+        let size = open ? model.openSize(rows: store.visible.count, footer: store.announcement != nil) : model.collapsedSize
         let inset = model.hasNotch ? NotchModel.topRadius : 0
         let w = size.width - 2 * inset
         let pf = panel.frame
