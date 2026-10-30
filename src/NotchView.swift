@@ -43,7 +43,7 @@ final class NotchModel: ObservableObject {
 
     static let wing: CGFloat = 66
     static let topRadius: CGFloat = 8
-    static let openWidth: CGFloat = 440
+    static let openWidth: CGFloat = 500
     static let rowHeight: CGFloat = 34
     static let flashHeight: CGFloat = 26
 
@@ -362,10 +362,11 @@ struct Row: View {
                             Text("\(c) reset\(c == 1 ? "" : "s")").font(Theme.ui(9.5, .semibold)).foregroundStyle(Theme.accent)
                                 .help("\(c) limit reset\(c == 1 ? "" : "s") banked with OpenAI")
                         }
-                        ToolChips(chips: chips, hovering: hovering, onSwitch: onSwitch)
                     }
-                    Text(subtitle).font(Theme.ui(10)).foregroundStyle(Theme.faint).lineLimit(1).help(Fmt.plan(account.plan ?? usage?.plan) ?? "")
+                    Text(subtitle).font(Theme.ui(10)).foregroundStyle(Theme.faint).lineLimit(1)
                 }
+                Spacer(minLength: 6)
+                ToolChips(chips: chips, hovering: hovering, onSwitch: onSwitch).padding(.trailing, 10).layoutPriority(2)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             if let u = usage, u.needsAuth == true || (!u.hasData && u.error != nil) {
@@ -389,9 +390,6 @@ struct Row: View {
         if let m = usage?.windows.first(where: { $0.kind == .model && $0.percent >= 40 }) { parts.append("\(m.label) \(Int(m.percent))%") }
         if parts.isEmpty { parts.append(account.provider.name) }
         if usage?.error != nil, usage?.needsAuth != true, !(usage?.windows.isEmpty ?? true) { parts.append("stale") }
-        // Where it's in use says more than the plan; the plan moves to the tooltip then.
-        let used = chips.filter(\.active).map(\.tool.name)
-        if !used.isEmpty { return "In " + used.joined(separator: ", ") }
         return parts.joined(separator: " · ")
     }
 }
@@ -594,16 +592,20 @@ struct Mark: View {
 
 /// The tools an account is signed in to, bright. On hover the others show dim; a click on one
 /// switches that tool to this account.
+/// One fixed slot per app, spanning both lines of the row. An app using this account shows its
+/// icon in full colour, always. On hover the other apps show faded and grey; a click switches
+/// that app to this account. Slots never move, so hovering shifts nothing.
 struct ToolChips: View {
     let chips: [Chip]
     let hovering: Bool
     let onSwitch: (Tool) -> Void
 
+    static let size: CGFloat = 22
+
     var body: some View {
-        HStack(spacing: 3) {
-            ForEach(chips.filter { (hovering && !$0.active) || $0.busy }) { c in
-                ToolChip(chip: c) { onSwitch(c.tool) }
-                    .transition(.opacity)
+        HStack(spacing: 5) {
+            ForEach(chips) { c in
+                ToolChip(chip: c, shown: c.active || c.busy || hovering) { onSwitch(c.tool) }
             }
         }
         .animation(.easeOut(duration: 0.12), value: hovering)
@@ -612,26 +614,28 @@ struct ToolChips: View {
 
 struct ToolChip: View {
     let chip: Chip
+    let shown: Bool
     let action: () -> Void
     @State private var hover = false
 
     var body: some View {
         Button(action: action) {
             ZStack {
-                RoundedRectangle(cornerRadius: 4).fill(Color.white.opacity(hover ? 0.22 : 0.1))
                 if chip.busy {
-                    ProgressView().controlSize(.mini).scaleEffect(0.55)
-                } else {
-                    ToolGlyph(tool: chip.tool).frame(width: 13, height: 13).opacity(hover ? 1 : 0.75)
+                    ProgressView().controlSize(.small).scaleEffect(0.7)
+                } else if shown {
+                    ToolGlyph(tool: chip.tool)
+                        .saturation(chip.active ? 1 : 0)
+                        .opacity(chip.active ? 1 : hover ? 0.9 : 0.35)
                 }
             }
-            .frame(width: 20, height: 17)
+            .frame(width: ToolChips.size, height: ToolChips.size)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .disabled(chip.busy)
+        .disabled(chip.busy || chip.active || !shown)
         .onHover { hover = $0 }
-        .help("Switch \(chip.tool.name) to this account")
+        .help(chip.active ? "\(chip.tool.name) uses this account" : "Switch \(chip.tool.name) to this account")
     }
 }
 
