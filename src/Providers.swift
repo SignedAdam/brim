@@ -76,20 +76,6 @@ enum Claude {
                          "user:mcp_servers", "user:file_upload", "user:plugins"]
     static let refreshScopes = ["user:profile", "user:inference", "user:sessions:claude_code", "user:mcp_servers",
                                 "user:file_upload", "user:plugins"]
-    static let keychainService = "Claude Code-credentials"
-
-    struct Creds { var access: String; var refresh: String?; var expiresAt: Date?; var plan: String? }
-
-    /// Claude Code's login, read through `security` (it is on the item's ACL, so no prompt).
-    static func claudeCodeCreds() -> Creds? {
-        guard let raw = Shell.run("/usr/bin/security", ["find-generic-password", "-s", keychainService, "-w"]),
-              let data = raw.data(using: .utf8),
-              let o = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let c = o["claudeAiOauth"] as? [String: Any], let at = c["accessToken"] as? String else { return nil }
-        let exp = (c["expiresAt"] as? Double).map { Date(timeIntervalSince1970: $0 / 1000) }
-        return Creds(access: at, refresh: c["refreshToken"] as? String, expiresAt: exp,
-                     plan: (c["rateLimitTier"] as? String) ?? (c["subscriptionType"] as? String))
-    }
 
     static func request(_ path: String, _ token: String) -> URLRequest {
         var r = URLRequest(url: URL(string: "https://api.anthropic.com/api/oauth/\(path)")!)
@@ -153,7 +139,10 @@ enum Claude {
         return (at, (o["refresh_token"] as? String) ?? refresh, exp)
     }
 
-    static func authorizeURL(port: Int, pkce: PKCE) -> URL {
+    /// `claude setup-token`'s grant: one year.
+    static let longLivedSeconds = 365 * 86400
+
+    static func authorizeURL(port: Int, pkce: PKCE, scopes: [String] = Claude.scopes) -> URL {
         var c = URLComponents(string: authorizeURL)!
         c.queryItems = [
             .init(name: "code", value: "true"), .init(name: "client_id", value: clientId),
@@ -166,10 +155,12 @@ enum Claude {
         return c.url!
     }
 
-    static func exchange(code: String, port: Int, pkce: PKCE) async throws -> [String: Any] {
-        try await HTTP.post(tokenURL, json: ["grant_type": "authorization_code", "code": code,
-                                             "redirect_uri": "http://localhost:\(port)/callback", "client_id": clientId,
-                                             "code_verifier": pkce.verifier, "state": pkce.state])
+    static func exchange(code: String, port: Int, pkce: PKCE, expiresIn: Int? = nil) async throws -> [String: Any] {
+        var body: [String: Any] = ["grant_type": "authorization_code", "code": code,
+                                   "redirect_uri": "http://localhost:\(port)/callback", "client_id": clientId,
+                                   "code_verifier": pkce.verifier, "state": pkce.state]
+        if let expiresIn { body["expires_in"] = expiresIn }
+        return try await HTTP.post(tokenURL, json: body)
     }
 }
 
@@ -179,23 +170,6 @@ enum Codex {
     static let clientId = "app_EMoamEEZ73f0CkXaXp7hrann"
     static let issuer = "https://auth.openai.com"
     static let port = 1455
-
-    struct Creds { var access: String; var refresh: String?; var accountId: String?; var idToken: String? }
-
-    static func home(_ path: String?) -> URL {
-        if let path, !path.isEmpty { return URL(fileURLWithPath: (path as NSString).expandingTildeInPath) }
-        if let env = ProcessInfo.processInfo.environment["CODEX_HOME"], !env.isEmpty { return URL(fileURLWithPath: env) }
-        return FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex")
-    }
-
-    static func cliCreds(_ path: String?) -> Creds? {
-        let url = home(path).appendingPathComponent("auth.json")
-        guard let data = try? Data(contentsOf: url),
-              let o = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let t = o["tokens"] as? [String: Any], let at = t["access_token"] as? String else { return nil }
-        return Creds(access: at, refresh: t["refresh_token"] as? String, accountId: t["account_id"] as? String,
-                     idToken: t["id_token"] as? String)
-    }
 
     /// The ChatGPT claims block OpenAI puts in its tokens.
     static func auth(_ token: String?) -> [String: Any] { jwtClaims(token)["https://api.openai.com/auth"] as? [String: Any] ?? [:] }
@@ -314,24 +288,24 @@ enum OpenRouter {
 
 enum Fetcher {
     /// Fetches usage. For `.signIn` accounts it may refresh tokens; the updated account is returned
-    /// so the caller can persist it.
-    static func fetch(_ a: Account, now: Date = Date()) async -> (Usage, Account) {
+    /// so the caller can persist it. `.tool` accounts read with `borrowed`, a token some holder
+    /// keeps fresh; it is never refreshed here.
+    static func fetch(_ a: Account, borrowed: Family? = nil, now: Date = Date()) async -> (Usage, Account) {
         var acct = a
         var u = Usage(accountId: a.id, fetchedAt: now)
         do {
             switch (a.provider, a.source) {
-            case (.claude, .claudeCode):
-                guard let c = Claude.claudeCodeCreds() else { throw ProviderError.auth("Claude Code is signed out") }
-                if let e = c.expiresAt, e < now { throw ProviderError.auth("token expired, open Claude Code once") }
-                u.windows = Claude.parse(try await Claude.usage(c.access))
-                u.plan = c.plan
+            case (.claude, .tool):
+                guard let f = borrowed else { throw ProviderError.auth("no tool on this Mac holds it") }
+                u.windows = Claude.parse(try await Claude.usage(f.access))
+                u.plan = f.rateLimitTier ?? f.subscriptionType
             case (.claude, _):
                 try await refreshIfNeeded(&acct, now: now)
                 u.windows = Claude.parse(try await Claude.usage(acct.accessToken ?? ""))
                 u.plan = acct.plan
-            case (.codex, .codexCLI):
-                guard let c = Codex.cliCreds(a.path) else { throw ProviderError.auth("Codex is signed out") }
-                let r = Codex.parse(try await Codex.usage(c.access, accountId: c.accountId))
+            case (.codex, .tool):
+                guard let f = borrowed else { throw ProviderError.auth("no tool on this Mac holds it") }
+                let r = Codex.parse(try await Codex.usage(f.access, accountId: f.accountId))
                 (u.windows, u.plan, u.resetCredits) = (r.windows, r.plan, r.credits)
             case (.codex, _):
                 try await refreshIfNeeded(&acct, now: now)
@@ -379,17 +353,28 @@ enum Fetcher {
 enum Shell {
     /// Runs a tool and returns trimmed stdout, or nil on failure.
     static func run(_ path: String, _ args: [String], stdin: String? = nil, env: [String: String] = [:]) -> String? {
+        let r = exec(path, args, stdin: stdin, env: env)
+        return r.status == 0 ? r.out : nil
+    }
+
+    /// Runs a tool; exit status and trimmed stdout / stderr. Status -1: it couldn't start.
+    static func exec(_ path: String, _ args: [String], stdin: String? = nil, env: [String: String] = [:]) -> (status: Int32, out: String, err: String) {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: path)
         p.arguments = args
         if !env.isEmpty { p.environment = ProcessInfo.processInfo.environment.merging(env) { $1 } }
-        let out = Pipe(); p.standardOutput = out; p.standardError = Pipe()
+        let out = Pipe(), err = Pipe(); p.standardOutput = out; p.standardError = err
         let inp = Pipe(); if stdin != nil { p.standardInput = inp }
-        do { try p.run() } catch { return nil }
-        if let stdin { inp.fileHandleForWriting.write(stdin.data(using: .utf8)!); try? inp.fileHandleForWriting.close() }
+        do { try p.run() } catch { return (-1, "", "\(path) didn't start") }
+        var errData = Data()
+        let g = DispatchGroup()
+        g.enter()
+        DispatchQueue.global().async { errData = err.fileHandleForReading.readDataToEndOfFile(); g.leave() }
+        if let stdin { inp.fileHandleForWriting.write(Data(stdin.utf8)); try? inp.fileHandleForWriting.close() }
         let data = out.fileHandleForReading.readDataToEndOfFile()
+        g.wait()
         p.waitUntilExit()
-        guard p.terminationStatus == 0 else { return nil }
-        return String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trim = { (d: Data) in String(decoding: d, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines) }
+        return (p.terminationStatus, trim(data), trim(errData))
     }
 }
