@@ -13,6 +13,13 @@ final class Store: ObservableObject {
     @Published var now = Date()
     /// Latest publicly announced reset, if recent.
     @Published var announcement: Announcement?
+    /// What each tool on this Mac holds, and what Brim has parked.
+    @Published var holdings: [Holding] = []
+    @Published var parked: [Slot] = []
+    /// Tools set up on this Mac.
+    @Published var installed: [Tool] = []
+    /// "<account id>:<tool>" of switches under way.
+    @Published var switching: Set<String> = []
 
     private var fired: Set<String> = []
     private var timer: Timer?
@@ -24,7 +31,7 @@ final class Store: ObservableObject {
 
     init(load: Bool = true) {
         guard load else { return }
-        accounts = JSON.load([Account].self, Paths.accounts) ?? []
+        accounts = Accounts.load()
         settings = JSON.load(Settings.self, Paths.settings) ?? Settings()
         let saved = JSON.load([Usage].self, Paths.usage) ?? []
         usage = Dictionary(saved.map { ($0.accountId, $0) }, uniquingKeysWith: { $1 })
@@ -35,8 +42,11 @@ final class Store: ObservableObject {
     // MARK: lifecycle
 
     func start() {
-        discover()
-        Task { await refresh() }
+        Task {
+            await scan()
+            discover()
+            await refresh()
+        }
         schedule()
         clock = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.now = Date() }
@@ -50,15 +60,46 @@ final class Store: ObservableObject {
         }
     }
 
-    /// Picks up Claude Code and Codex CLI logins on this Mac, once each.
+    /// Reads what every tool holds (Keychain, files, OMP's database) off the main thread.
+    func scan() async {
+        let (h, v, t) = await Task.detached { () -> ([Holding], Vault, [Tool]) in
+            let v = Vault.load()
+            return (Tools.scan(minted: v.minted), v, Tool.allCases.filter(\.installed))
+        }.value
+        holdings = h
+        parked = v.slots
+        installed = t
+    }
+
+    /// The tool icons on an account's row.
+    func chips(_ a: Account) -> [Chip] {
+        guard let k = a.key else { return [] }
+        return installed.filter { $0.providers.contains(a.provider) }.map { t in
+            let here = holdings.filter { $0.tool == t && $0.provider == a.provider }
+            let mine = here.filter { $0.account == k }
+            let active = mine.contains { $0.dead == nil }
+            let dead = mine.first { $0.dead != nil }?.dead
+            let other = here.contains { $0.account == nil } ? "holds a login Brim can't place" : nil
+            var help = t.name
+            if active { help += " · \(a.label)" } else { help += " · switch to \(a.label)" }
+            if let d = dead { help += "\nThis login is dead: \(d.prefix(90))" }
+            if !active, let o = other { help += "\nIt \(o.prefix(90))" }
+            if !active, let p = t.pickup { help += "\n\(p.prefix(1).uppercased() + p.dropFirst())" }
+            return Chip(tool: t, active: active, busy: switching.contains("\(a.id):\(t.rawValue)"),
+                        mine: active ? nil : dead, other: other, help: help)
+        }
+    }
+
+    /// Adds a row for every account a tool on this Mac is signed in to, once each, and an
+    /// OpenRouter key found in the environment.
     func discover() {
         var changed = false
-        if !accounts.contains(where: { $0.source == .claudeCode }), Claude.claudeCodeCreds() != nil {
-            accounts.append(Account(id: UUID().uuidString, provider: .claude, source: .claudeCode, label: "Claude"))
-            changed = true
-        }
-        if !accounts.contains(where: { $0.source == .codexCLI }), Codex.cliCreds(nil) != nil {
-            accounts.append(Account(id: UUID().uuidString, provider: .codex, source: .codexCLI, label: "ChatGPT"))
+        for h in holdings {
+            guard let k = h.account, !accounts.contains(where: { $0.key == k }) else { continue }
+            let f = h.family
+            accounts.append(Account(id: UUID().uuidString, provider: h.provider, source: .tool,
+                                    label: f.email.map(SignIn.defaultLabel) ?? h.provider.name, email: f.email,
+                                    plan: f.rateLimitTier ?? f.subscriptionType, remoteId: f.accountId))
             changed = true
         }
         // An OpenRouter key in the environment or global.env: track it by name, never copy it.
@@ -67,26 +108,16 @@ final class Store: ObservableObject {
                                     keyVar: "OPENROUTER_API_KEY"))
             changed = true
         }
-        if changed { save(); Task { await identify() } }
+        if changed { save() }
     }
 
-    /// Fills in email / remote id for CLI accounts (for labels and duplicate checks).
-    func identify() async {
-        for i in accounts.indices where accounts[i].remoteId == nil {
-            switch accounts[i].source {
-            case .claudeCode:
-                if let c = Claude.claudeCodeCreds(), let p = try? await Claude.profile(c.access) {
-                    accounts[i].remoteId = p.id; accounts[i].email = p.email; accounts[i].plan = p.plan
-                }
-            case .codexCLI:
-                if let c = Codex.cliCreds(accounts[i].path) {
-                    accounts[i].remoteId = c.accountId
-                    accounts[i].email = jwtClaims(c.idToken)["email"] as? String
-                }
-            case .signIn, .apiKey: break
-            }
-        }
-        save()
+    /// A fresh token for a `.tool` account, from whoever holds it now. Read, never refreshed.
+    /// Hermes's Claude tokens can't read usage (inference only), so they don't count.
+    func borrowed(_ a: Account, now: Date) -> Family? {
+        guard a.source == .tool, let k = a.key else { return nil }
+        let live = holdings.filter { $0.account == k && $0.dead == nil && !($0.tool == .hermes && $0.provider == .claude) }.map(\.family)
+            + parked.filter { $0.account == k && $0.error == nil && $0.tool != .hermes }.map(\.family)
+        return live.filter { !$0.expired(now) }.max { ($0.expiresAt ?? .distantPast) < ($1.expiresAt ?? .distantPast) }
     }
 
     // MARK: refresh
@@ -97,18 +128,22 @@ final class Store: ObservableObject {
         guard !refreshing else { return }
         refreshing = true
         lastFetch = Date()
+        await Task.detached { await Switcher.keepFresh() }.value
+        await scan()
+        discover()
         let now = Date()
-        let todo = visible.filter { (backoff[$0.id] ?? .distantPast) <= now }
+        let todo = visible.filter { (backoff[$0.id] ?? .distantPast) <= now }.map { ($0, borrowed($0, now: now)) }
         let results = await withTaskGroup(of: (Usage, Account).self) { g in
-            for a in todo { g.addTask { await Fetcher.fetch(a, now: now) } }
+            for (a, b) in todo { g.addTask { await Fetcher.fetch(a, borrowed: b, now: now) } }
             var out: [(Usage, Account)] = []
             for await r in g { out.append(r) }
             return out
         }
-        var newAlerts: [Alert] = []
+        var olds: [String: Usage] = [:]
         for (u, a) in results {
             var u = u
             let old = usage[a.id]
+            olds[a.id] = old
             if u.error != nil, u.needsAuth != true, let old, old.hasData {
                 // Keep showing the last good numbers through a transient failure.
                 let err = u.error
@@ -120,8 +155,12 @@ final class Store: ObservableObject {
                 accounts[i].accessToken = a.accessToken; accounts[i].refreshToken = a.refreshToken
                 accounts[i].expiresAt = a.expiresAt; accounts[i].plan = a.plan
             }
-            newAlerts += Alerts.evaluate(account: a, old: old, new: u, settings: settings, fired: fired, now: now)
             usage[a.id] = u
+        }
+        var newAlerts: [Alert] = []
+        for (u, a) in results {
+            newAlerts += Alerts.evaluate(account: a, old: olds[a.id], new: usage[a.id] ?? u, settings: settings, fired: fired,
+                                         now: now, alternative: alternative(to: a))
         }
         self.now = now
         save()
@@ -129,6 +168,35 @@ final class Store: ObservableObject {
         refreshing = false
         for a in newAlerts { fire(a) }
         if settings.announcements { await checkAnnouncements(now: now) }
+    }
+
+    /// The other account of the same provider with the most room left, for "almost full" alerts.
+    func alternative(to a: Account) -> (label: String, left: Double)? {
+        visible.filter { $0.provider == a.provider && $0.id != a.id }
+            .compactMap { o in usage[o.id].flatMap { $0.hasData && $0.needsAuth != true ? (o.label, 100 - $0.peak) : nil } }
+            .max { $0.1 < $1.1 }
+    }
+
+    // MARK: switching
+
+    /// Points `tool` at `account`: the click on a tool icon, and `brim switch`.
+    func switchTool(_ tool: Tool, to a: Account) {
+        let k = "\(a.id):\(tool.rawValue)"
+        guard !switching.contains(k) else { return }
+        switching.insert(k)
+        if Switcher.needsSignIn(tool, a) {
+            show(Flash(text: "Sign \(tool.name) in as \(a.label) in your browser", provider: a.provider), seconds: 30)
+        }
+        Task {
+            do {
+                let line = try await Switcher.run(tool, to: a)
+                show(Flash(text: line + (tool.pickup.map { " · \($0)" } ?? ""), provider: a.provider, tone: .accent))
+            } catch {
+                show(Flash(text: "\(tool.name): \(error)", provider: a.provider, tone: .warn), seconds: 10)
+            }
+            switching.remove(k)
+            await scan()
+        }
     }
 
     /// Picks up resets OpenAI / Anthropic announce in public, via resets.albastov.com.
@@ -190,11 +258,9 @@ final class Store: ObservableObject {
 
     // MARK: accounts
 
+    /// Adds a Brim sign-in; one for an account a tool already holds upgrades that row.
     func add(_ a: Account) throws {
-        if let r = a.remoteId, let dup = accounts.first(where: { $0.provider == a.provider && $0.remoteId == r && !$0.isHidden }) {
-            throw ProviderError.other("already tracked as \(dup.label)")
-        }
-        accounts.append(a)
+        accounts = try Accounts.adding(a, to: accounts)
         save()
         Task { await refresh() }
     }
@@ -206,16 +272,26 @@ final class Store: ObservableObject {
     }
 
     /// Signed-in accounts are deleted; discovered ones are hidden so discovery doesn't bring them back.
+    /// A signed-in account a tool still holds keeps its row, hidden and without Brim's tokens.
     func remove(_ id: String) {
         guard let i = accounts.firstIndex(where: { $0.id == id }) else { return }
-        if Self.discovered(accounts[i]) { accounts[i].hidden = true } else { accounts.remove(at: i) }
+        let k = accounts[i].key
+        if Self.discovered(accounts[i]) {
+            accounts[i].hidden = true
+        } else if k != nil, holdings.contains(where: { $0.account == k }) || parked.contains(where: { $0.account == k }) {
+            accounts[i].source = .tool
+            accounts[i].hidden = true
+            (accounts[i].accessToken, accounts[i].refreshToken, accounts[i].expiresAt) = (nil, nil, nil)
+        } else {
+            accounts.remove(at: i)
+        }
         usage[id] = nil
         save()
         JSON.save(Array(usage.values), Paths.usage)
     }
 
     static func discovered(_ a: Account) -> Bool {
-        a.source == .claudeCode || a.source == .codexCLI || (a.source == .apiKey && a.keyVar != nil)
+        a.source == .tool || (a.source == .apiKey && a.keyVar != nil)
     }
 
     func restore(_ id: String) {
@@ -265,4 +341,18 @@ struct Flash: Equatable {
         case .auth: tone = .warn
         }
     }
+}
+
+/// One tool icon on an account row.
+struct Chip: Identifiable, Equatable {
+    var tool: Tool
+    /// The tool is signed in as this account.
+    var active: Bool
+    var busy: Bool
+    /// This account's login in the tool is dead (why).
+    var mine: String?
+    /// The tool holds a login that's dead or Brim can't place (what).
+    var other: String?
+    var help: String
+    var id: String { tool.rawValue }
 }

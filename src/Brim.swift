@@ -11,6 +11,8 @@ enum Main {
         case "run": App.run()
         case "status": CLI.status(args)
         case "list": CLI.list()
+        case "where": CLI.whereNow(args)
+        case "switch": CLI.switchTool(args)
         case "add": CLI.add(args)
         case "rename": CLI.rename(args)
         case "remove", "rm": CLI.remove(args)
@@ -73,9 +75,9 @@ final class App: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// `brim add/rename/remove` edit the files and send SIGHUP.
+    /// `brim add/rename/remove/switch` edit the files and send SIGHUP.
     func reload() {
-        store.accounts = JSON.load([Account].self, Paths.accounts) ?? store.accounts
+        store.accounts = JSON.load([Account].self, Paths.accounts).map(Accounts.migrate) ?? store.accounts
         store.settings = JSON.load(Settings.self, Paths.settings) ?? store.settings
         store.schedule()
         notch.place()

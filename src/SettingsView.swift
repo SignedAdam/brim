@@ -24,8 +24,8 @@ struct SettingsView: View {
                     if !hidden.isEmpty {
                         Menu("Restore") {
                             ForEach(hidden) { a in
-                                Button(a.source == .claudeCode ? "Claude Code login" : a.source == .codexCLI ? "Codex CLI login"
-                                       : "OpenRouter key (\(a.keyVar ?? "env"))") { store.restore(a.id) }
+                                let name = a.source == .apiKey ? "OpenRouter key (\(a.keyVar ?? "env"))" : "\(a.label)\(a.email.map { " · \($0)" } ?? "")"
+                                Button(name) { store.restore(a.id) }
                             }
                         }
                         .fixedSize()

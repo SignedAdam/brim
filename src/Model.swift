@@ -19,18 +19,27 @@ enum Provider: String, Codable, CaseIterable {
 
 /// Where an account's credentials come from.
 enum Source: String, Codable {
-    /// Claude Code's own login on this Mac (Keychain "Claude Code-credentials"). Read-only:
-    /// Claude Code refreshes it, we never do, so the two never fight over a rotating token.
-    case claudeCode
-    /// Codex CLI's login (`$CODEX_HOME/auth.json`). Read-only for the same reason.
-    case codexCLI
-    /// Brim's own sign-in. Brim owns and refreshes these tokens.
+    /// An account some tool on this Mac (Claude Code, Codex, Hermes, OMP) holds, without a Brim
+    /// sign-in of its own. Usage is read with whichever holder's token is fresh, never refreshed.
+    /// Old `claudeCode` / `codexCLI` rows ("whoever the CLI is signed in as") decode as this.
+    case tool
+    /// Brim's own sign-in. Brim owns and refreshes these tokens, for its usage polling only.
     case signIn
     /// An API key (OpenRouter): stored in `accessToken`, or read from `keyVar` in the
     /// environment / ~/.config/secrets/global.env so it never gets copied.
     case apiKey
+
+    init(from d: Decoder) throws {
+        let s = try d.singleValueContainer().decode(String.self)
+        if s == "claudeCode" || s == "codexCLI" { self = .tool; return }
+        guard let v = Source(rawValue: s) else {
+            throw DecodingError.dataCorrupted(.init(codingPath: d.codingPath, debugDescription: "unknown source \(s)"))
+        }
+        self = v
+    }
 }
 
+/// An identity: (provider, remoteId), with a label and what we know about it.
 struct Account: Codable, Identifiable, Equatable {
     var id: String
     var provider: Provider
@@ -38,20 +47,56 @@ struct Account: Codable, Identifiable, Equatable {
     var label: String
     var email: String?
     var plan: String?
-    /// Provider-side account id, used to spot the same account added twice.
+    /// Provider-side account id: Claude account uuid, ChatGPT account id.
     var remoteId: String?
-    /// For `.codexCLI`: the CODEX_HOME directory. Nil = ~/.codex.
-    var path: String?
     var hidden: Bool?
     /// For `.apiKey`: the env var holding the key instead of storing it.
     var keyVar: String?
 
-    // Tokens, only for `.signIn`.
+    // Tokens, only for `.signIn` (and stored OpenRouter keys).
     var accessToken: String?
     var refreshToken: String?
     var expiresAt: Date?
 
     var isHidden: Bool { hidden ?? false }
+    /// "claude:<uuid>": how tools' holdings and vault slots refer to this account.
+    var key: String? { provider == .openrouter ? nil : remoteId.map { "\(provider.rawValue):\($0)" } }
+}
+
+enum Accounts {
+    /// One row per (provider, remoteId): a Brim sign-in absorbs a tool-held row for the same
+    /// account, keeping the first row's place. The row stays visible if either was.
+    static func migrate(_ list: [Account]) -> [Account] {
+        var out: [Account] = []
+        for a in list {
+            guard let k = a.key, let i = out.firstIndex(where: { $0.key == k }) else { out.append(a); continue }
+            var keep = a.source == .signIn && out[i].source != .signIn ? a : out[i]
+            let other = keep.id == a.id ? out[i] : a
+            keep.hidden = keep.isHidden && other.isHidden ? true : nil
+            if keep.email == nil { keep.email = other.email }
+            if keep.plan == nil { keep.plan = other.plan }
+            out[i] = keep
+        }
+        return out
+    }
+
+    static func load() -> [Account] { migrate(JSON.load([Account].self, Paths.accounts) ?? []) }
+
+    /// Adds a Brim sign-in, or upgrades the identity row it matches (keeping its label and place).
+    static func adding(_ a: Account, to list: [Account]) throws -> [Account] {
+        var list = list
+        if let r = a.remoteId, let dup = list.first(where: { $0.provider == a.provider && $0.remoteId == r && $0.source != .tool && !$0.isHidden }) {
+            throw ProviderError.other("already tracked as \(dup.label)")
+        }
+        if let k = a.key, let i = list.firstIndex(where: { $0.key == k }) {
+            var n = a
+            if list[i].source == .tool { n.id = list[i].id; n.label = list[i].label }
+            list[i] = n
+            return list
+        }
+        list.append(a)
+        return list
+    }
 }
 
 /// One rate-limit window: "5h session", "week", a per-model weekly cap.
@@ -182,8 +227,9 @@ struct Alert: Codable, Equatable {
 
 enum Alerts {
     /// Compares the previous and current usage of one account and returns what's worth saying.
+    /// `alternative`: the least-used other account of the provider, named in threshold alerts.
     static func evaluate(account a: Account, old: Usage?, new: Usage, settings s: Settings,
-                         fired: Set<String>, now: Date) -> [Alert] {
+                         fired: Set<String>, now: Date, alternative: (label: String, left: Double)? = nil) -> [Alert] {
         var out: [Alert] = []
         func add(_ kind: Alert.Kind, _ w: UsageWindow?, _ title: String, _ key: String) {
             guard !fired.contains(key) else { return }
@@ -198,7 +244,8 @@ enum Alerts {
             let cycle = w.resetsAt.map { String(Int($0.timeIntervalSince1970 / 600)) } ?? "-"
             // Threshold crossings: only the highest one crossed, once per cycle.
             if let t = s.thresholds.last(where: { w.percent >= $0 }) {
-                add(.threshold, w, "\(a.label) \(w.label) at \(Int(w.percent))%", "thr:\(a.id):\(w.id):\(Int(t)):\(cycle)")
+                let alt = alternative.map { ", \($0.label) has \(Int($0.left))% left" } ?? ""
+                add(.threshold, w, "\(a.label) \(w.label) at \(Int(w.percent))%\(alt)", "thr:\(a.id):\(w.id):\(Int(t)):\(cycle)")
             }
             // Use-it-or-lose-it on weekly windows.
             if w.kind == .weekly, let r = w.resetsAt {
@@ -278,12 +325,15 @@ enum Fmt {
 // MARK: - Persistence
 
 enum Paths {
-    static var home: URL {
-        if let p = ProcessInfo.processInfo.environment["BRIM_HOME"], !p.isEmpty {
+    /// An env override (tilde-expanded), else the default under the user's home.
+    static func env(_ name: String, _ fallback: String) -> URL {
+        if let p = ProcessInfo.processInfo.environment[name], !p.isEmpty {
             return URL(fileURLWithPath: (p as NSString).expandingTildeInPath)
         }
-        return FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".brim")
+        return FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(fallback)
     }
+
+    static var home: URL { env("BRIM_HOME", ".brim") }
     static var accounts: URL { home.appendingPathComponent("accounts.json") }
     static var usage: URL { home.appendingPathComponent("usage.json") }
     static var settings: URL { home.appendingPathComponent("settings.json") }
@@ -292,6 +342,19 @@ enum Paths {
     static var socket: URL { home.appendingPathComponent("brim.sock") }
     static var lock: URL { home.appendingPathComponent("brim.lock") }
     static var log: URL { home.appendingPathComponent("brim.log") }
+    static var vault: URL { home.appendingPathComponent("vault.json") }
+    static var vaultLock: URL { home.appendingPathComponent("vault.lock") }
+    static var backups: URL { home.appendingPathComponent("backups") }
+
+    // The tools' own stores. Each can be pointed elsewhere, so the selftest runs on copies.
+    static var codexHome: URL { env("CODEX_HOME", ".codex") }
+    static var claudeJSON: URL { env("BRIM_CLAUDE_JSON", ".claude.json") }
+    static var claudeDir: URL { env("CLAUDE_CONFIG_DIR", ".claude") }
+    static var hermesRoot: URL { env("BRIM_HERMES_ROOT", ".hermes") }
+    static var ompDB: URL { env("BRIM_OMP_DB", ".omp/agent/agent.db") }
+    static var keychainService: String {
+        ProcessInfo.processInfo.environment["BRIM_KEYCHAIN_SERVICE"].flatMap { $0.isEmpty ? nil : $0 } ?? "Claude Code-credentials"
+    }
 
     static func ensure() {
         try? FileManager.default.createDirectory(at: home, withIntermediateDirectories: true,
@@ -338,12 +401,16 @@ enum JSON {
     }
 
     /// Atomic write, owner-only (accounts.json holds tokens).
-    static func save<T: Encodable>(_ v: T, _ url: URL) {
+    static func save<T: Encodable>(_ v: T, _ url: URL) { try? write(v, url) }
+
+    static func write<T: Encodable>(_ v: T, _ url: URL) throws {
         Paths.ensure()
-        guard let data = try? encoder.encode(v) else { return }
+        let data = try encoder.encode(v)
         let tmp = url.appendingPathExtension("tmp")
-        FileManager.default.createFile(atPath: tmp.path, contents: data, attributes: [.posixPermissions: 0o600])
-        _ = try? FileManager.default.replaceItemAt(url, withItemAt: tmp)
+        guard FileManager.default.createFile(atPath: tmp.path, contents: data, attributes: [.posixPermissions: 0o600]) else {
+            throw ProviderError.other("can't write \(tmp.path)")
+        }
+        _ = try FileManager.default.replaceItemAt(url, withItemAt: tmp)
     }
 }
 

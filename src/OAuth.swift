@@ -114,27 +114,39 @@ enum SignIn {
 
     /// Opens the browser, waits for the callback, exchanges the code, and returns a new account.
     static func run(_ provider: Provider, label: String?) async throws -> Account {
+        guard provider != .openrouter else { throw ProviderError.other("OpenRouter uses an API key") }
+        let f = try await family(provider)
+        var a = Account(id: UUID().uuidString, provider: provider, source: .signIn, label: label ?? provider.name,
+                        email: f.email, plan: f.subscriptionType, remoteId: f.accountId,
+                        accessToken: f.access, refreshToken: f.refresh, expiresAt: f.expiresAt)
+        if provider == .claude, let p = try? await Claude.profile(f.access) {
+            a.remoteId = a.remoteId ?? p.id; a.email = a.email ?? p.email; a.plan = p.plan
+        }
+        if label == nil, let e = a.email { a.label = defaultLabel(e) }
+        return a
+    }
+
+    /// A new login straight from the browser. `longLived`: Claude's `claude setup-token` grant
+    /// (inference only, one year, no refresh token), for tools that keep a static token.
+    static func family(_ provider: Provider, longLived: Bool = false) async throws -> Family {
         let pkce = PKCE()
         switch provider {
         case .openrouter:
             throw ProviderError.other("OpenRouter uses an API key")
         case .claude:
             let lb = try Loopback()
-            NSWorkspace.shared.open(Claude.authorizeURL(port: lb.port, pkce: pkce))
+            NSWorkspace.shared.open(Claude.authorizeURL(port: lb.port, pkce: pkce, scopes: longLived ? ["user:inference"] : Claude.scopes))
             let q = try await lb.wait(path: "/callback")
             guard let code = q["code"], q["state"] == pkce.state else { throw ProviderError.other("sign-in cancelled") }
-            let t = try await Claude.exchange(code: code, port: lb.port, pkce: pkce)
+            let t = try await Claude.exchange(code: code, port: lb.port, pkce: pkce, expiresIn: longLived ? Claude.longLivedSeconds : nil)
             guard let at = t["access_token"] as? String else { throw ProviderError.other("no token") }
             let acct = t["account"] as? [String: Any]
-            var a = Account(id: UUID().uuidString, provider: .claude, source: .signIn, label: label ?? "Claude",
-                            email: acct?["email_address"] as? String, remoteId: acct?["uuid"] as? String,
-                            accessToken: at, refreshToken: t["refresh_token"] as? String,
-                            expiresAt: Date().addingTimeInterval((t["expires_in"] as? Double) ?? 3600))
-            if let p = try? await Claude.profile(at) {
-                a.remoteId = a.remoteId ?? p.id; a.email = a.email ?? p.email; a.plan = p.plan
-            }
-            if label == nil, let e = a.email { a.label = defaultLabel(e) }
-            return a
+            let org = t["organization"] as? [String: Any]
+            return Family(provider: .claude, access: at, refresh: t["refresh_token"] as? String,
+                          expiresAt: Date().addingTimeInterval((t["expires_in"] as? Double) ?? 3600),
+                          accountId: acct?["uuid"] as? String, email: acct?["email_address"] as? String,
+                          orgId: org?["uuid"] as? String, orgName: org?["name"] as? String,
+                          scopes: (t["scope"] as? String)?.split(separator: " ").map(String.init))
         case .codex:
             let lb = try Loopback(port: Codex.port)
             NSWorkspace.shared.open(Codex.authorizeURL(pkce: pkce))
@@ -142,14 +154,7 @@ enum SignIn {
             guard let code = q["code"], q["state"] == pkce.state else { throw ProviderError.other("sign-in cancelled") }
             let t = try await Codex.exchange(code: code, pkce: pkce)
             guard let at = t["access_token"] as? String else { throw ProviderError.other("no token") }
-            let idt = t["id_token"] as? String
-            let auth = Codex.auth(idt).isEmpty ? Codex.auth(at) : Codex.auth(idt)
-            let email = jwtClaims(idt)["email"] as? String
-            return Account(id: UUID().uuidString, provider: .codex, source: .signIn,
-                           label: label ?? email.map(defaultLabel) ?? "Codex", email: email,
-                           plan: auth["chatgpt_plan_type"] as? String, remoteId: auth["chatgpt_account_id"] as? String,
-                           accessToken: at, refreshToken: t["refresh_token"] as? String,
-                           expiresAt: (jwtClaims(at)["exp"] as? Double).map { Date(timeIntervalSince1970: $0) })
+            return Family.codex(access: at, refresh: t["refresh_token"] as? String, idToken: t["id_token"] as? String)
         }
     }
 
