@@ -23,6 +23,17 @@ final class NotchPanel: NSPanel {
 
 final class FirstMouseHost<V: View>: NSHostingView<V> {
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    // The panel never becomes the active app, so without this the app underneath keeps
+    // its cursor (often a text I-beam) over the notch. Claim the plain arrow everywhere.
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackingAreas.filter { $0.userInfo?["brim"] != nil }.forEach(removeTrackingArea)
+        addTrackingArea(NSTrackingArea(rect: .zero, options: [.cursorUpdate, .mouseMoved, .activeAlways, .inVisibleRect],
+                                       owner: self, userInfo: ["brim": true]))
+    }
+    override func cursorUpdate(with event: NSEvent) { NSCursor.arrow.set() }
+    override func mouseMoved(with event: NSEvent) { super.mouseMoved(with: event); NSCursor.arrow.set() }
 }
 
 @MainActor
@@ -134,6 +145,7 @@ final class NotchController {
         if model.open {
             if inside(open: true) {
                 closeTimer?.invalidate(); closeTimer = nil
+                NSCursor.arrow.set()
             } else if closeTimer == nil {
                 closeTimer = Timer.scheduledTimer(withTimeInterval: 0.28, repeats: false) { [weak self] _ in
                     Task { @MainActor in self?.collapse() }
