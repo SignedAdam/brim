@@ -1,0 +1,45 @@
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build and selftest
+        run: make check
+
+      - name: Package a universal Brim.app
+        id: package
+        run: |
+          make release
+          echo "file=$(ls dist/Brim-*-macos.zip)" >> "$GITHUB_OUTPUT"
+
+      - name: Unpack it the way a stranger would
+        run: |
+          mkdir -p /tmp/verify && ditto -x -k ${{ steps.package.outputs.file }} /tmp/verify
+          codesign --verify --deep /tmp/verify/Brim.app
+          lipo -archs /tmp/verify/Brim.app/Contents/MacOS/brim | grep -q x86_64
+          /tmp/verify/Brim.app/Contents/MacOS/brim --version | grep -q "${GITHUB_REF_NAME#v}"
+
+      - name: Attach it to the release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ steps.package.outputs.file }}
+          body: |
+            Unzip, move **Brim.app** to Applications, then once in Terminal:
+
+            ```sh
+            xattr -dr com.apple.quarantine /Applications/Brim.app
+            /Applications/Brim.app/Contents/MacOS/brim install
+            ```
+
+            macOS 14+, Apple silicon or Intel. See the [CHANGELOG](https://github.com/SignedAdam/brim/blob/main/CHANGELOG.md).

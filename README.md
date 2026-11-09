@@ -18,11 +18,18 @@ Hover the notch and it opens: every account's 5-hour session and weekly limit, h
 
 ## Install
 
-macOS 14+, Xcode command line tools.
+macOS 14+. Download **Brim.app** from the [latest release](https://github.com/SignedAdam/brim/releases/latest), move it to Applications, then:
+
+```sh
+xattr -dr com.apple.quarantine /Applications/Brim.app   # unsigned build
+/Applications/Brim.app/Contents/MacOS/brim install        # runs at login
+```
+
+Or from source (Xcode command line tools):
 
 ```sh
 git clone https://github.com/SignedAdam/brim && cd brim
-make install        # builds, links brim onto your PATH, runs at login
+make install        # builds Brim.app into /Applications, puts brim on your PATH, runs at login
 ```
 
 ## Command line
