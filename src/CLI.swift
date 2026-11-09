@@ -1,7 +1,5 @@
 import Foundation
 
-// Command-line side: what agents and scripts use.
-
 enum CLI {
     static func help() {
         print("""
@@ -28,7 +26,6 @@ enum CLI {
           brim quit                 stop the running app
           brim snapshot <png> [--open] [--flash] [--live]
                                     render the notch offscreen
-          brim selftest
 
         Files live in ~/.brim (BRIM_HOME moves them). Alert hooks: settings.json "hooks",
         each a shell command that gets the alert as JSON on stdin and in $BRIM_ALERT.
@@ -44,7 +41,6 @@ enum CLI {
 
     static func accounts() -> [Account] { Accounts.load() }
 
-    /// A store that has looked at what the tools hold and added rows for their accounts.
     static func scanned() -> Store {
         let st = MainActor.assumeIsolated { Store(load: true) }
         try? await_ { await st.scan() }
@@ -71,7 +67,6 @@ enum CLI {
         var usage: [String: Usage] = Dictionary((JSON.load([Usage].self, Paths.usage) ?? []).map { ($0.accountId, $0) }, uniquingKeysWith: { $1 })
         if args.contains("--fresh") || usage.isEmpty {
             if let pid = Lock.running() {
-                // The app owns token refreshes; ask it to fetch and wait for the file to change.
                 let before = (try? Paths.usage.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
                 kill(pid, SIGUSR1)
                 let deadline = Date().addingTimeInterval(20)
@@ -91,7 +86,6 @@ enum CLI {
                     return out
                 }
             }) ?? []
-            // Keep any rotated tokens.
             var all = accounts()
             for (u, a) in results {
                 usage[u.accountId] = u

@@ -2,8 +2,6 @@ import Foundation
 import CryptoKit
 import AppKit
 
-// Browser sign-in: PKCE plus a one-shot loopback HTTP listener.
-
 struct PKCE {
     let verifier: String
     let challenge: String
@@ -28,7 +26,6 @@ extension Data {
     }
 }
 
-/// Accepts exactly one GET on 127.0.0.1:port and hands back its query items.
 final class Loopback {
     let port: Int
     private var fd: Int32 = -1
@@ -59,7 +56,6 @@ final class Loopback {
 
     deinit { if fd >= 0 { close(fd) } }
 
-    /// Waits (off the main thread) for a request whose path matches; replies with a small page.
     func wait(path: String, timeout: TimeInterval = 300) async throws -> [String: String] {
         let fd = self.fd
         return try await withCheckedThrowingContinuation { cont in
@@ -103,7 +99,6 @@ final class Loopback {
 }
 
 enum SignIn {
-    /// Checks an OpenRouter key and returns an account for it. `keyVar` = keep only the env var's name.
     static func openRouter(key: String, keyVar: String?, label: String?) async throws -> Account {
         let (_, keyLabel) = try await OpenRouter.balance(key)
         let fingerprint = Data(SHA256.hash(data: Data(key.utf8))).base64url.prefix(12)
@@ -112,7 +107,6 @@ enum SignIn {
                        accessToken: keyVar == nil ? key : nil)
     }
 
-    /// Opens the browser, waits for the callback, exchanges the code, and returns a new account.
     static func run(_ provider: Provider, label: String?) async throws -> Account {
         guard provider != .openrouter else { throw ProviderError.other("OpenRouter uses an API key") }
         let f = try await family(provider)
@@ -126,8 +120,6 @@ enum SignIn {
         return a
     }
 
-    /// A new login straight from the browser. `longLived`: Claude's `claude setup-token` grant
-    /// (inference only, one year, no refresh token), for tools that keep a static token.
     static func family(_ provider: Provider, longLived: Bool = false) async throws -> Family {
         let pkce = PKCE()
         switch provider {
@@ -158,7 +150,6 @@ enum SignIn {
         }
     }
 
-    /// "adam@work.com" → "Work", "someone@gmail.com" → "Someone".
     static func defaultLabel(_ email: String) -> String {
         let parts = email.split(separator: "@")
         guard parts.count == 2 else { return email }

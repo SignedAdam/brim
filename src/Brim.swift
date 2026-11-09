@@ -18,7 +18,6 @@ enum Main {
         case "remove", "rm": CLI.remove(args)
         case "alerts": CLI.alerts(args)
         case "snapshot": Snapshot.run(args)
-        case "selftest": exit(Selftest.run() ? 0 : 1)
         case "install": Agent.install()
         case "uninstall": Agent.uninstall()
         case "quit": CLI.signal(SIGTERM, "quit")
@@ -30,8 +29,6 @@ enum Main {
         }
     }
 }
-
-// MARK: - App
 
 @MainActor
 final class App: NSObject, NSApplicationDelegate {
@@ -75,7 +72,6 @@ final class App: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// `brim add/rename/remove/switch` edit the files and send SIGHUP.
     func reload() {
         store.accounts = JSON.load([Account].self, Paths.accounts).map(Accounts.migrate) ?? store.accounts
         store.settings = JSON.load(Settings.self, Paths.settings) ?? store.settings
@@ -99,7 +95,6 @@ final class App: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// Asks for an OpenRouter key in a small native sheet, checks it, then adds it.
     func addKey() {
         let alert = NSAlert()
         alert.messageText = "Add OpenRouter Key"
@@ -134,7 +129,6 @@ final class App: NSObject, NSApplicationDelegate {
             w.title = "Brim Settings"
             w.styleMask = [.titled, .closable]
             w.isReleasedWhenClosed = false
-            // Open on the Space you're on, never pull you to the one it was last shown on.
             w.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
             w.center()
             settingsWindow = w
@@ -148,8 +142,6 @@ final class App: NSObject, NSApplicationDelegate {
         log("stop")
     }
 }
-
-// MARK: - Single instance
 
 enum Lock {
     private static var fd: Int32 = -1
@@ -167,7 +159,6 @@ enum Lock {
         (try? String(contentsOf: Paths.lock, encoding: .utf8))?.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    /// The pid of a running brim, if any.
     static func running() -> pid_t? {
         let f = open(Paths.lock.path, O_RDONLY)
         guard f >= 0 else { return nil }
@@ -177,8 +168,6 @@ enum Lock {
     }
 }
 
-// MARK: - LaunchAgent
-
 enum Agent {
     static let label = "com.signedadam.brim"
     static var plist: URL {
@@ -187,8 +176,6 @@ enum Agent {
 
     static var installed: Bool { FileManager.default.fileExists(atPath: plist.path) }
 
-    /// `restart: false` from inside the app: write and load the agent without killing ourselves
-    /// (the agent's copy sees the lock and exits quietly; it takes over at the next login).
     static func install(restart: Bool = true) {
         let bin = URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath().path
         let p: [String: Any] = [

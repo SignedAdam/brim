@@ -1,9 +1,6 @@
 import Foundation
 
-// Pure data: accounts, usage, persistence, formatting. No UI imports, so the
-// selftest can exercise all of it.
-
-let VERSION = "0.1.0"
+let VERSION = "0.2.0"
 
 enum Provider: String, Codable, CaseIterable {
     case claude, codex, openrouter
@@ -17,16 +14,9 @@ enum Provider: String, Codable, CaseIterable {
     }
 }
 
-/// Where an account's credentials come from.
 enum Source: String, Codable {
-    /// An account some tool on this Mac (Claude Code, Codex, Hermes, OMP) holds, without a Brim
-    /// sign-in of its own. Usage is read with whichever holder's token is fresh, never refreshed.
-    /// Old `claudeCode` / `codexCLI` rows ("whoever the CLI is signed in as") decode as this.
     case tool
-    /// Brim's own sign-in. Brim owns and refreshes these tokens, for its usage polling only.
     case signIn
-    /// An API key (OpenRouter): stored in `accessToken`, or read from `keyVar` in the
-    /// environment / ~/.config/secrets/global.env so it never gets copied.
     case apiKey
 
     init(from d: Decoder) throws {
@@ -39,7 +29,6 @@ enum Source: String, Codable {
     }
 }
 
-/// An identity: (provider, remoteId), with a label and what we know about it.
 struct Account: Codable, Identifiable, Equatable {
     var id: String
     var provider: Provider
@@ -47,25 +36,19 @@ struct Account: Codable, Identifiable, Equatable {
     var label: String
     var email: String?
     var plan: String?
-    /// Provider-side account id: Claude account uuid, ChatGPT account id.
     var remoteId: String?
     var hidden: Bool?
-    /// For `.apiKey`: the env var holding the key instead of storing it.
     var keyVar: String?
 
-    // Tokens, only for `.signIn` (and stored OpenRouter keys).
     var accessToken: String?
     var refreshToken: String?
     var expiresAt: Date?
 
     var isHidden: Bool { hidden ?? false }
-    /// "claude:<uuid>": how tools' holdings and vault slots refer to this account.
     var key: String? { provider == .openrouter ? nil : remoteId.map { "\(provider.rawValue):\($0)" } }
 }
 
 enum Accounts {
-    /// One row per (provider, remoteId): a Brim sign-in absorbs a tool-held row for the same
-    /// account, keeping the first row's place. The row stays visible if either was.
     static func migrate(_ list: [Account]) -> [Account] {
         var out: [Account] = []
         for a in list {
@@ -82,7 +65,6 @@ enum Accounts {
 
     static func load() -> [Account] { migrate(JSON.load([Account].self, Paths.accounts) ?? []) }
 
-    /// Adds a Brim sign-in, or upgrades the identity row it matches (keeping its label and place).
     static func adding(_ a: Account, to list: [Account]) throws -> [Account] {
         var list = list
         if let r = a.remoteId, let dup = list.first(where: { $0.provider == a.provider && $0.remoteId == r && $0.source != .tool && !$0.isHidden }) {
@@ -99,45 +81,37 @@ enum Accounts {
     }
 }
 
-/// One rate-limit window: "5h session", "week", a per-model weekly cap.
 struct UsageWindow: Codable, Equatable, Identifiable {
     enum Kind: String, Codable { case session, weekly, model }
     var kind: Kind
     var label: String
-    /// 0...100
     var percent: Double
     var resetsAt: Date?
     var length: TimeInterval?
 
     var id: String { kind.rawValue + label }
 
-    /// How far through the window we are, 0...1. Nil when the window has no known length.
     func elapsed(at now: Date) -> Double? {
         guard let resetsAt, let length, length > 0 else { return nil }
         return min(1, max(0, 1 - resetsAt.timeIntervalSince(now) / length))
     }
 
-    /// Projected use at reset if the current pace holds. >100 means you'll run out early.
     func projected(at now: Date) -> Double? {
         guard let e = elapsed(at: now), e > 0.05 else { return nil }
         return percent / e
     }
 
-    /// When the window runs dry at the current pace, if before the reset.
     func runsOut(at now: Date) -> Date? {
         guard let resetsAt, let length, let e = elapsed(at: now), e > 0.05, percent > 0, percent < 100 else { return nil }
         let start = resetsAt.addingTimeInterval(-length)
-        let rate = percent / now.timeIntervalSince(start)            // percent per second
+        let rate = percent / now.timeIntervalSince(start)
         let t = now.addingTimeInterval((100 - percent) / rate)
         return t < resetsAt ? t : nil
     }
 }
 
-/// Prepaid credit (OpenRouter), in dollars.
 struct Balance: Codable, Equatable {
-    /// Credit left. Nil when the key can't see the account's credits and has no limit of its own.
     var remaining: Double?
-    /// Credit bought (or the key's limit), so `used / total` can draw a bar.
     var total: Double?
     var today: Double?
     var week: Double?
@@ -153,41 +127,27 @@ struct Usage: Codable, Equatable {
     var fetchedAt: Date
     var windows: [UsageWindow] = []
     var plan: String?
-    /// Codex: banked "reset my limits" credits.
     var resetCredits: Int?
     var balance: Balance?
     var error: String?
-    /// True when the credentials are gone or expired and the user must act.
     var needsAuth: Bool?
 
     var session: UsageWindow? { windows.first { $0.kind == .session } }
     var weekly: UsageWindow? { windows.first { $0.kind == .weekly } }
-    /// The tightest window right now.
     var peak: Double { (windows.map(\.percent) + [balance?.usedPercent].compactMap { $0 }).max() ?? 0 }
     var hasData: Bool { !windows.isEmpty || balance != nil }
 }
 
-// MARK: - Settings
-
 struct Settings: Codable, Equatable {
     var refreshSeconds: Double = 180
-    /// Alert when any window crosses these percents.
     var thresholds: [Double] = [80, 95]
-    /// "Use it or lose it": alert when a weekly window resets within this many hours
-    /// with at least `leftoverPercent` unused.
     var leftoverLeadHours: Double = 12
     var leftoverPercent: Double = 30
-    /// Alert when a window resets (usage drops back) — handy to restart paused work.
     var alertOnReset: Bool = true
-    /// Shell commands run for every alert, with the alert as JSON on stdin and in $BRIM_ALERT.
     var hooks: [String] = []
-    /// Raise a Pager panel for alerts (if `pager` is installed).
     var pager: Bool = true
-    /// Which display gets the notch: "auto" = the built-in one with a notch, else main.
     var display: String = "auto"
-    /// Watch resets.albastov.com for announced resets (OpenAI / Anthropic posting "limits reset").
     var announcements: Bool = true
-    /// Warn when a prepaid balance (OpenRouter) drops below this many dollars.
     var lowBalance: Double = 5
 
     init() {}
@@ -208,8 +168,6 @@ struct Settings: Codable, Equatable {
     }
 }
 
-// MARK: - Alerts
-
 struct Alert: Codable, Equatable {
     enum Kind: String, Codable { case threshold, leftover, reset, credits, auth, announced, balance }
     var kind: Kind
@@ -220,14 +178,11 @@ struct Alert: Codable, Equatable {
     var percent: Double?
     var resetsAt: Date?
     var title: String
-    /// Dedupe key: the same alert never fires twice for the same window cycle.
     var key: String
     var at: Date
 }
 
 enum Alerts {
-    /// Compares the previous and current usage of one account and returns what's worth saying.
-    /// `alternative`: the least-used other account of the provider, named in threshold alerts.
     static func evaluate(account a: Account, old: Usage?, new: Usage, settings s: Settings,
                          fired: Set<String>, now: Date, alternative: (label: String, left: Double)? = nil) -> [Alert] {
         var out: [Alert] = []
@@ -242,12 +197,10 @@ enum Alerts {
         }
         for w in new.windows {
             let cycle = w.resetsAt.map { String(Int($0.timeIntervalSince1970 / 600)) } ?? "-"
-            // Threshold crossings: only the highest one crossed, once per cycle.
             if let t = s.thresholds.last(where: { w.percent >= $0 }) {
                 let alt = alternative.map { ", \($0.label) has \(Int($0.left))% left" } ?? ""
                 add(.threshold, w, "\(a.label) \(w.label) at \(Int(w.percent))%\(alt)", "thr:\(a.id):\(w.id):\(Int(t)):\(cycle)")
             }
-            // Use-it-or-lose-it on weekly windows.
             if w.kind == .weekly, let r = w.resetsAt {
                 let left = r.timeIntervalSince(now)
                 if left > 0, left < s.leftoverLeadHours * 3600, 100 - w.percent >= s.leftoverPercent {
@@ -255,14 +208,12 @@ enum Alerts {
                         "left:\(a.id):\(w.id):\(cycle)")
                 }
             }
-            // Resets: the window moved on and usage fell.
             if s.alertOnReset, let o = old?.windows.first(where: { $0.id == w.id }),
                let or = o.resetsAt, or <= now.addingTimeInterval(60), o.percent >= 1, w.percent < o.percent {
                 add(.reset, w, "\(a.label) \(w.label) reset", "reset:\(a.id):\(w.id):\(Int(or.timeIntervalSince1970 / 600))")
             }
         }
         if let r = new.balance?.remaining, s.lowBalance > 0, r < s.lowBalance {
-            // Once per dollar step down, so a draining balance speaks up again but not every poll.
             add(.balance, nil, "\(a.label) balance at \(Fmt.money(r))", "bal:\(a.id):\(Int(r.rounded(.down)))")
         }
         if let c = new.resetCredits, c > (old?.resetCredits ?? c) {
@@ -272,10 +223,7 @@ enum Alerts {
     }
 }
 
-// MARK: - Formatting
-
 enum Fmt {
-    /// "7m", "2h14", "3d 4h"
     static func duration(_ t: TimeInterval) -> String {
         let s = max(0, Int(t.rounded()))
         if s < 60 { return "now" }
@@ -285,13 +233,11 @@ enum Fmt {
         return h % 24 == 0 ? "\(d)d" : "\(d)d \(h % 24)h"
     }
 
-    /// Short reset label: always a countdown ("37m", "2h14", "3d 4h").
     static func reset(_ date: Date?, now: Date) -> String {
         guard let date else { return "" }
         return duration(date.timeIntervalSince(now))
     }
 
-    /// "Mon 06:52", for tooltips.
     static func when(_ date: Date) -> String {
         let f = DateFormatter()
         f.locale = Locale(identifier: "en_US_POSIX")
@@ -299,7 +245,6 @@ enum Fmt {
         return f.string(from: date)
     }
 
-    /// "$42.10", "$0.84", "$1.2k"
     static func money(_ v: Double) -> String {
         if v >= 10_000 { return String(format: "$%.0fk", v / 1000) }
         if v >= 1000 { return String(format: "$%.1fk", v / 1000) }
@@ -322,15 +267,16 @@ enum Fmt {
     }
 }
 
-// MARK: - Persistence
-
 enum Paths {
-    /// An env override (tilde-expanded), else the default under the user's home.
     static func env(_ name: String, _ fallback: String) -> URL {
         if let p = ProcessInfo.processInfo.environment[name], !p.isEmpty {
             return URL(fileURLWithPath: (p as NSString).expandingTildeInPath)
         }
-        return FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(fallback)
+        return inHome(fallback)
+    }
+
+    static func inHome(_ path: String) -> URL {
+        FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(path)
     }
 
     static var home: URL { env("BRIM_HOME", ".brim") }
@@ -346,15 +292,12 @@ enum Paths {
     static var vaultLock: URL { home.appendingPathComponent("vault.lock") }
     static var backups: URL { home.appendingPathComponent("backups") }
 
-    // The tools' own stores. Each can be pointed elsewhere, so the selftest runs on copies.
     static var codexHome: URL { env("CODEX_HOME", ".codex") }
-    static var claudeJSON: URL { env("BRIM_CLAUDE_JSON", ".claude.json") }
+    static var claudeJSON: URL { inHome(".claude.json") }
     static var claudeDir: URL { env("CLAUDE_CONFIG_DIR", ".claude") }
-    static var hermesRoot: URL { env("BRIM_HERMES_ROOT", ".hermes") }
-    static var ompDB: URL { env("BRIM_OMP_DB", ".omp/agent/agent.db") }
-    static var keychainService: String {
-        ProcessInfo.processInfo.environment["BRIM_KEYCHAIN_SERVICE"].flatMap { $0.isEmpty ? nil : $0 } ?? "Claude Code-credentials"
-    }
+    static var hermesRoot: URL { inHome(".hermes") }
+    static var ompDB: URL { inHome(".omp/agent/agent.db") }
+    static let keychainService = "Claude Code-credentials"
 
     static func ensure() {
         try? FileManager.default.createDirectory(at: home, withIntermediateDirectories: true,
@@ -387,7 +330,6 @@ enum JSON {
         if let d = f.date(from: s) { return d }
         f.formatOptions = [.withInternetDateTime]
         if let d = f.date(from: s) { return d }
-        // Microsecond fractions ("…00.163298+00:00") trip ISO8601DateFormatter: trim to millis.
         if let r = s.range(of: #"\.\d+"#, options: .regularExpression) {
             let frac = String(s[r].prefix(4))
             return parseDate(s.replacingCharacters(in: r, with: frac))
@@ -400,7 +342,6 @@ enum JSON {
         return try? decoder.decode(t, from: data)
     }
 
-    /// Atomic write, owner-only (accounts.json holds tokens).
     static func save<T: Encodable>(_ v: T, _ url: URL) { try? write(v, url) }
 
     static func write<T: Encodable>(_ v: T, _ url: URL) throws {
@@ -424,7 +365,6 @@ func log(_ s: String) {
     }
 }
 
-/// A reset announced in public (from resets.albastov.com).
 struct Announcement: Codable, Equatable, Identifiable {
     var id: String
     var provider: Provider
@@ -433,7 +373,6 @@ struct Announcement: Codable, Equatable, Identifiable {
     var url: String?
     var at: Date
 
-    /// One short line: "Codex limits reset".
     var short: String { "\(product ?? (provider == .claude ? "Claude" : "Codex")) limits reset" }
 
     static func parse(_ o: [String: Any]) -> [Announcement] {

@@ -1,7 +1,5 @@
 import Foundation
 
-// Reading usage from Claude and Codex, and signing in to new accounts.
-
 enum ProviderError: Error, CustomStringConvertible {
     case auth(String), http(Int, String), other(String)
     var description: String {
@@ -54,7 +52,6 @@ enum HTTP {
     }
 }
 
-/// Decodes a JWT payload without verifying it (we only read our own tokens' claims).
 func jwtClaims(_ token: String?) -> [String: Any] {
     guard let token else { return [:] }
     let parts = token.split(separator: ".")
@@ -65,13 +62,10 @@ func jwtClaims(_ token: String?) -> [String: Any] {
     return o
 }
 
-// MARK: - Claude
-
 enum Claude {
     static let clientId = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
     static let authorizeURL = "https://claude.com/cai/oauth/authorize"
     static let tokenURL = "https://platform.claude.com/v1/oauth/token"
-    /// Exactly what Claude Code asks for; claude.ai rejects other combinations ("Invalid request format").
     static let scopes = ["org:create_api_key", "user:profile", "user:inference", "user:sessions:claude_code",
                          "user:mcp_servers", "user:file_upload", "user:plugins"]
     static let refreshScopes = ["user:profile", "user:inference", "user:sessions:claude_code", "user:mcp_servers",
@@ -97,8 +91,6 @@ enum Claude {
         try await HTTP.json(request("usage", token))
     }
 
-    /// Turns /api/oauth/usage into windows. Prefers the newer `limits` list, falls back to
-    /// the `five_hour` / `seven_day*` objects.
     static func parse(_ o: [String: Any]) -> [UsageWindow] {
         var out: [UsageWindow] = []
         if let limits = o["limits"] as? [[String: Any]], !limits.isEmpty {
@@ -139,7 +131,6 @@ enum Claude {
         return (at, (o["refresh_token"] as? String) ?? refresh, exp)
     }
 
-    /// `claude setup-token`'s grant: one year.
     static let longLivedSeconds = 365 * 86400
 
     static func authorizeURL(port: Int, pkce: PKCE, scopes: [String] = Claude.scopes) -> URL {
@@ -164,25 +155,44 @@ enum Claude {
     }
 }
 
-// MARK: - Codex
-
 enum Codex {
     static let clientId = "app_EMoamEEZ73f0CkXaXp7hrann"
     static let issuer = "https://auth.openai.com"
     static let port = 1455
 
-    /// The ChatGPT claims block OpenAI puts in its tokens.
     static func auth(_ token: String?) -> [String: Any] { jwtClaims(token)["https://api.openai.com/auth"] as? [String: Any] ?? [:] }
 
-    static func usage(_ token: String, accountId: String?) async throws -> [String: Any] {
-        var r = URLRequest(url: URL(string: "https://chatgpt.com/backend-api/wham/usage")!)
+    static func request(_ path: String, _ token: String, accountId: String?) -> URLRequest {
+        var r = URLRequest(url: URL(string: "https://chatgpt.com/backend-api/wham" + path)!)
         r.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         if let accountId { r.setValue(accountId, forHTTPHeaderField: "ChatGPT-Account-Id") }
         r.setValue("application/json", forHTTPHeaderField: "Accept")
-        return try await HTTP.json(r)
+        return r
     }
 
-    static func parse(_ o: [String: Any], now: Date = Date()) -> (windows: [UsageWindow], plan: String?, credits: Int?) {
+    static func usage(_ token: String, accountId: String?) async throws -> [String: Any] {
+        try await HTTP.json(request("/usage", token, accountId: accountId))
+    }
+
+    static func useReset(_ token: String, accountId: String?) async throws {
+        let list = try await HTTP.json(request("/rate-limit-reset-credits", token, accountId: accountId))
+        guard let id = nextCredit(list) else { throw ProviderError.other("no reset left") }
+        var r = request("/rate-limit-reset-credits/consume", token, accountId: accountId)
+        r.httpMethod = "POST"
+        r.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        r.httpBody = try JSONSerialization.data(withJSONObject: ["credit_id": id, "redeem_request_id": UUID().uuidString.lowercased()])
+        _ = try await HTTP.json(r)
+    }
+
+    static func nextCredit(_ o: [String: Any]) -> String? {
+        func expiry(_ c: [String: Any]) -> Date { (c["expires_at"] as? String).flatMap(JSON.parseDate) ?? .distantFuture }
+        return (o["credits"] as? [[String: Any]] ?? [])
+            .filter { $0["status"] as? String == "available" }
+            .min { expiry($0) < expiry($1) }?["id"] as? String
+    }
+
+    static func parse(_ o: [String: Any]) -> (windows: [UsageWindow], plan: String?, credits: Int?) {
+        let now = Date()
         var out: [UsageWindow] = []
         func win(_ w: [String: Any]?, _ fallback: UsageWindow.Kind) {
             guard let w, let pct = (w["used_percent"] as? NSNumber)?.doubleValue else { return }
@@ -228,13 +238,9 @@ enum Codex {
     }
 }
 
-// MARK: - OpenRouter
-
 enum OpenRouter {
     static let base = "https://openrouter.ai/api/v1"
 
-    /// The key: stored on the account, or looked up by name in the environment, then in
-    /// ~/.config/secrets/global.env (LaunchAgents don't see shell env).
     static func key(_ a: Account) -> String? {
         if let k = a.accessToken, !k.isEmpty { return k }
         guard let v = a.keyVar else { return nil }
@@ -262,7 +268,6 @@ enum OpenRouter {
         return (try await HTTP.json(r))["data"] as? [String: Any] ?? [:]
     }
 
-    /// Balance from /credits (whole account) when the key may read it, else the key's own limit.
     static func balance(_ key: String) async throws -> (Balance, label: String?) {
         let k = try await get("/key", key)
         let credits = try? await get("/credits", key)
@@ -277,19 +282,13 @@ enum OpenRouter {
             b.remaining = max(0, total - used)
         }
         if let left = num(k, "limit_remaining") {
-            // A key with its own cap: whichever runs out first is what matters.
             if b.remaining == nil || left < b.remaining! { b.remaining = left; b.total = num(k, "limit") }
         }
         return b
     }
 }
 
-// MARK: - Fetching one account
-
 enum Fetcher {
-    /// Fetches usage. For `.signIn` accounts it may refresh tokens; the updated account is returned
-    /// so the caller can persist it. `.tool` accounts read with `borrowed`, a token some holder
-    /// keeps fresh; it is never refreshed here.
     static func fetch(_ a: Account, borrowed: Family? = nil, now: Date = Date()) async -> (Usage, Account) {
         var acct = a
         var u = Usage(accountId: a.id, fetchedAt: now)
@@ -303,13 +302,9 @@ enum Fetcher {
                 try await refreshIfNeeded(&acct, now: now)
                 u.windows = Claude.parse(try await Claude.usage(acct.accessToken ?? ""))
                 u.plan = acct.plan
-            case (.codex, .tool):
-                guard let f = borrowed else { throw ProviderError.auth("no tool on this Mac holds it") }
-                let r = Codex.parse(try await Codex.usage(f.access, accountId: f.accountId))
-                (u.windows, u.plan, u.resetCredits) = (r.windows, r.plan, r.credits)
             case (.codex, _):
-                try await refreshIfNeeded(&acct, now: now)
-                let r = Codex.parse(try await Codex.usage(acct.accessToken ?? "", accountId: acct.remoteId))
+                let (token, id) = try await codexAuth(&acct, borrowed: borrowed, now: now)
+                let r = Codex.parse(try await Codex.usage(token, accountId: id))
                 (u.windows, u.plan, u.resetCredits) = (r.windows, r.plan, r.credits)
             case (.openrouter, _):
                 guard let key = OpenRouter.key(a) else { throw ProviderError.auth("no API key") }
@@ -323,6 +318,22 @@ enum Fetcher {
             u.error = (error as NSError).localizedDescription
         }
         return (u, acct)
+    }
+
+    static func useReset(_ a: Account, borrowed: Family?, now: Date = Date()) async throws -> Account {
+        var acct = a
+        let (token, id) = try await codexAuth(&acct, borrowed: borrowed, now: now)
+        try await Codex.useReset(token, accountId: id)
+        return acct
+    }
+
+    static func codexAuth(_ a: inout Account, borrowed: Family?, now: Date) async throws -> (token: String, accountId: String?) {
+        if a.source == .tool {
+            guard let f = borrowed else { throw ProviderError.auth("no tool on this Mac holds it") }
+            return (f.access, f.accountId)
+        }
+        try await refreshIfNeeded(&a, now: now)
+        return (a.accessToken ?? "", a.remoteId)
     }
 
     static func refreshIfNeeded(_ a: inout Account, now: Date) async throws {
@@ -351,13 +362,11 @@ enum Fetcher {
 }
 
 enum Shell {
-    /// Runs a tool and returns trimmed stdout, or nil on failure.
     static func run(_ path: String, _ args: [String], stdin: String? = nil, env: [String: String] = [:]) -> String? {
         let r = exec(path, args, stdin: stdin, env: env)
         return r.status == 0 ? r.out : nil
     }
 
-    /// Runs a tool; exit status and trimmed stdout / stderr. Status -1: it couldn't start.
     static func exec(_ path: String, _ args: [String], stdin: String? = nil, env: [String: String] = [:]) -> (status: Int32, out: String, err: String) {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: path)

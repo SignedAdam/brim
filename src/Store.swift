@@ -1,31 +1,28 @@
 import Foundation
 import Combine
 
-/// The live state: accounts, their latest usage, polling and alerts.
 @MainActor
 final class Store: ObservableObject {
     @Published var accounts: [Account] = []
     @Published var usage: [String: Usage] = [:]
     @Published var settings = Settings()
     @Published var refreshing = false
-    /// A line shown under the notch for a few seconds (alerts, sign-in results).
     @Published var flash: Flash?
     @Published var now = Date()
-    /// Latest publicly announced reset, if recent.
     @Published var announcement: Announcement?
-    /// What each tool on this Mac holds, and what Brim has parked.
     @Published var holdings: [Holding] = []
     @Published var parked: [Slot] = []
-    /// Tools set up on this Mac.
     @Published var installed: [Tool] = []
-    /// "<account id>:<tool>" of switches under way.
     @Published var switching: Set<String> = []
+    @Published var resetting: Set<String> = []
+    @Published var resetFailure: [String: String] = [:]
 
     private var fired: Set<String> = []
     private var timer: Timer?
     private var clock: Timer?
     private var lastFetch = Date.distantPast
     private var backoff: [String: Date] = [:]
+    private var resetGuard: [String: (until: Date, credits: Int)] = [:]
 
     var visible: [Account] { accounts.filter { !$0.isHidden } }
 
@@ -38,8 +35,6 @@ final class Store: ObservableObject {
         fired = Set(JSON.load([String].self, Paths.fired) ?? [])
         if !FileManager.default.fileExists(atPath: Paths.settings.path) { JSON.save(settings, Paths.settings) }
     }
-
-    // MARK: lifecycle
 
     func start() {
         Task {
@@ -60,7 +55,6 @@ final class Store: ObservableObject {
         }
     }
 
-    /// Reads what every tool holds (Keychain, files, OMP's database) off the main thread.
     func scan() async {
         let (h, v, t) = await Task.detached { () -> ([Holding], Vault, [Tool]) in
             let v = Vault.load()
@@ -71,13 +65,10 @@ final class Store: ObservableObject {
         installed = t
     }
 
-    /// The tool icons on an account's row.
-    /// Tools shown under "Logins": the Claude ones, then Codex.
     var loginTools: [Tool] { [Tool.claudeCode, .hermes, .omp, .codex].filter { installed.contains($0) } }
 
     func loginProvider(_ t: Tool) -> Provider { t == .codex ? .codex : .claude }
 
-    /// The account a tool uses right now, by name.
     func loginLabel(_ t: Tool) -> String {
         let here = holdings.filter { $0.tool == t && $0.provider == loginProvider(t) && $0.dead == nil }
         if here.isEmpty { return "Not signed in" }
@@ -106,8 +97,6 @@ final class Store: ObservableObject {
         }
     }
 
-    /// Adds a row for every account a tool on this Mac is signed in to, once each, and an
-    /// OpenRouter key found in the environment.
     func discover() {
         var changed = false
         for h in holdings {
@@ -118,7 +107,6 @@ final class Store: ObservableObject {
                                     plan: f.rateLimitTier ?? f.subscriptionType, remoteId: f.accountId))
             changed = true
         }
-        // An OpenRouter key in the environment or global.env: track it by name, never copy it.
         if !accounts.contains(where: { $0.keyVar == "OPENROUTER_API_KEY" }), OpenRouter.env("OPENROUTER_API_KEY") != nil {
             accounts.append(Account(id: UUID().uuidString, provider: .openrouter, source: .apiKey, label: "OpenRouter",
                                     keyVar: "OPENROUTER_API_KEY"))
@@ -127,8 +115,6 @@ final class Store: ObservableObject {
         if changed { save() }
     }
 
-    /// A fresh token for a `.tool` account, from whoever holds it now. Read, never refreshed.
-    /// Hermes's Claude tokens can't read usage (inference only), so they don't count.
     func borrowed(_ a: Account, now: Date) -> Family? {
         guard a.source == .tool, let k = a.key else { return nil }
         let live = holdings.filter { $0.account == k && $0.dead == nil && !($0.tool == .hermes && $0.provider == .claude) }.map(\.family)
@@ -136,9 +122,6 @@ final class Store: ObservableObject {
         return live.filter { !$0.expired(now) }.max { ($0.expiresAt ?? .distantPast) < ($1.expiresAt ?? .distantPast) }
     }
 
-    // MARK: refresh
-
-    /// Refreshes every visible account in parallel. `force` skips the freshness check.
     func refresh(force: Bool = true) async {
         if !force, Date().timeIntervalSince(lastFetch) < 45 { return }
         guard !refreshing else { return }
@@ -161,16 +144,12 @@ final class Store: ObservableObject {
             let old = usage[a.id]
             olds[a.id] = old
             if u.error != nil, u.needsAuth != true, let old, old.hasData {
-                // Keep showing the last good numbers through a transient failure.
                 let err = u.error
                 u = old; u.error = err
                 if err?.contains("429") == true { backoff[a.id] = now.addingTimeInterval(600) }
             }
-            if let i = accounts.firstIndex(where: { $0.id == a.id }), accounts[i] != a {
-                // Only take token/plan updates; the user may have renamed it meanwhile.
-                accounts[i].accessToken = a.accessToken; accounts[i].refreshToken = a.refreshToken
-                accounts[i].expiresAt = a.expiresAt; accounts[i].plan = a.plan
-            }
+            adopt(a)
+            if staleAfterReset(u) { continue }
             usage[a.id] = u
         }
         var newAlerts: [Alert] = []
@@ -186,16 +165,66 @@ final class Store: ObservableObject {
         if settings.announcements { await checkAnnouncements(now: now) }
     }
 
-    /// The other account of the same provider with the most room left, for "almost full" alerts.
     func alternative(to a: Account) -> (label: String, left: Double)? {
         visible.filter { $0.provider == a.provider && $0.id != a.id }
             .compactMap { o in usage[o.id].flatMap { $0.hasData && $0.needsAuth != true ? (o.label, 100 - $0.peak) : nil } }
             .max { $0.1 < $1.1 }
     }
 
-    // MARK: switching
+    private func adopt(_ a: Account) {
+        guard let i = accounts.firstIndex(where: { $0.id == a.id }), accounts[i] != a else { return }
+        accounts[i].accessToken = a.accessToken; accounts[i].refreshToken = a.refreshToken
+        accounts[i].expiresAt = a.expiresAt; accounts[i].plan = a.plan
+    }
 
-    /// Points `tool` at `account`: the click on a tool icon, and `brim switch`.
+    func useReset(_ a: Account) {
+        guard !resetting.contains(a.id) else { return }
+        resetting.insert(a.id)
+        resetFailure[a.id] = nil
+        Task {
+            let acct: Account
+            do {
+                acct = try await Fetcher.useReset(a, borrowed: borrowed(a, now: Date()))
+            } catch {
+                resetFailure[a.id] = (error as? ProviderError)?.description ?? error.localizedDescription
+                resetting.remove(a.id)
+                return
+            }
+            adopt(acct)
+            let now = Date()
+            var u = usage[a.id] ?? Usage(accountId: a.id, fetchedAt: now)
+            u.windows = u.windows.map { w in
+                var w = w
+                w.percent = 0
+                if let l = w.length { w.resetsAt = now.addingTimeInterval(l) }
+                return w
+            }
+            u.resetCredits = max(0, (u.resetCredits ?? 1) - 1)
+            usage[a.id] = u
+            resetGuard[a.id] = (now.addingTimeInterval(60), u.resetCredits ?? 0)
+            resetting.remove(a.id)
+            JSON.save(Array(usage.values), Paths.usage)
+            for wait in [1.0, 3, 8] {
+                try? await Task.sleep(for: .seconds(wait))
+                let (f, b) = await Fetcher.fetch(acct, borrowed: borrowed(acct, now: Date()))
+                adopt(b)
+                if f.hasData, !staleAfterReset(f) {
+                    usage[a.id] = f
+                    JSON.save(Array(usage.values), Paths.usage)
+                    break
+                }
+            }
+            save()
+        }
+    }
+
+    private func staleAfterReset(_ u: Usage) -> Bool {
+        guard let g = resetGuard[u.accountId], u.hasData else { return false }
+        if Date() < g.until, (u.resetCredits ?? 0) > g.credits { return true }
+        resetGuard[u.accountId] = nil
+        return false
+    }
+
     func switchTool(_ tool: Tool, to a: Account) {
         let k = "\(a.id):\(tool.rawValue)"
         guard !switching.contains(k) else { return }
@@ -215,14 +244,12 @@ final class Store: ObservableObject {
         }
     }
 
-    /// Picks up resets OpenAI / Anthropic announce in public, via resets.albastov.com.
     func checkAnnouncements(now: Date) async {
         guard let o = try? await HTTP.json(URLRequest(url: URL(string: "https://resets.albastov.com/api/resets?limit=5")!)) else { return }
         let list = Announcement.parse(o).sorted { $0.at > $1.at }
         announcement = list.first.flatMap { now.timeIntervalSince($0.at) < 48 * 3600 ? $0 : nil }
         let firstRun = !fired.contains { $0.hasPrefix("ann:") }
         for a in list where !fired.contains("ann:\(a.id)") {
-            // On the very first run just remember what's there; only new ones are news.
             if firstRun || now.timeIntervalSince(a.at) > 6 * 3600 { fired.insert("ann:\(a.id)"); continue }
             fire(Alert(kind: .announced, accountId: "", account: a.provider == .claude ? "Anthropic" : "OpenAI",
                        provider: a.provider, window: nil, percent: nil, resetsAt: nil,
@@ -230,8 +257,6 @@ final class Store: ObservableObject {
         }
         JSON.save(Array(fired), Paths.fired)
     }
-
-    // MARK: alerts
 
     func fire(_ a: Alert) {
         fired.insert(a.key)
@@ -272,9 +297,6 @@ final class Store: ObservableObject {
         }
     }
 
-    // MARK: accounts
-
-    /// Adds a Brim sign-in; one for an account a tool already holds upgrades that row.
     func add(_ a: Account) throws {
         accounts = try Accounts.adding(a, to: accounts)
         save()
@@ -287,8 +309,6 @@ final class Store: ObservableObject {
         save()
     }
 
-    /// Signed-in accounts are deleted; discovered ones are hidden so discovery doesn't bring them back.
-    /// A signed-in account a tool still holds keeps its row, hidden and without Brim's tokens.
     func remove(_ id: String) {
         guard let i = accounts.firstIndex(where: { $0.id == id }) else { return }
         let k = accounts[i].key
@@ -315,7 +335,6 @@ final class Store: ObservableObject {
         Task { await refresh() }
     }
 
-    /// Moves a visible account up (-1) or down (+1) one place.
     func shift(_ id: String, by d: Int) {
         let v = visible
         guard let i = v.firstIndex(where: { $0.id == id }), v.indices.contains(i + d) else { return }
@@ -366,15 +385,11 @@ struct Flash: Equatable {
     }
 }
 
-/// One tool icon on an account row.
 struct Chip: Identifiable, Equatable {
     var tool: Tool
-    /// The tool is signed in as this account.
     var active: Bool
     var busy: Bool
-    /// This account's login in the tool is dead (why).
     var mine: String?
-    /// The tool holds a login that's dead or Brim can't place (what).
     var other: String?
     var help: String
     var id: String { tool.rawValue }

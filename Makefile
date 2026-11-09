@@ -1,4 +1,3 @@
-# brim. Run `make` to see everything below.
 .DEFAULT_GOAL := help
 SHELL := /bin/bash
 
@@ -12,7 +11,7 @@ APPDIR     ?= /Applications
 VERSION    := $(shell sed -n 's/^let VERSION = "\(.*\)"/\1/p' src/Model.swift)
 ZIP        := dist/Brim-$(VERSION)-macos.zip
 
-.PHONY: help build app check run snap install uninstall release clean
+.PHONY: help build app run snap install uninstall release clean
 
 help: ## show this
 	@grep -hE '^[a-z-]+:.*?## ' $(MAKEFILE_LIST) | awk -F':.*?## ' '{printf "  \033[38;5;190m%-10s\033[0m %s\n", $$1, $$2}'
@@ -32,9 +31,6 @@ $(APP): $(BIN) tools/Info.plist
 	@sed 's/__VERSION__/$(VERSION)/' tools/Info.plist > $(APP)/Contents/Info.plist
 	@cp $(BIN) $(APP)/Contents/MacOS/brim
 	@./tools/sign.sh $(APP)
-
-check: $(BIN) ## selftest
-	@$(BIN) selftest
 
 run: $(BIN) ## run in the foreground
 	@$(BIN) run

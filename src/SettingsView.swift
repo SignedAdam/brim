@@ -1,8 +1,6 @@
 import SwiftUI
 import AppKit
 
-// Settings: a plain native grouped form. Names say what they do; no hints.
-
 struct SettingsView: View {
     @ObservedObject var store: Store
     var onAdd: (Provider) -> Void

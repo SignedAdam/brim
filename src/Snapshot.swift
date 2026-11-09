@@ -1,9 +1,6 @@
 import AppKit
 import SwiftUI
 
-// `brim snapshot out.png`: renders the notch offscreen over a fake desktop, open and closed.
-// Used to check the design without anyone's screen, and for the README.
-
 enum Snapshot {
     static func run(_ args: [String]) {
         guard let out = args.first(where: { !$0.hasPrefix("--") }) else { print("usage: brim snapshot <png> [--open] [--hover] [--flash] [--live] [--settings]"); exit(2) }
@@ -81,7 +78,6 @@ enum Snapshot {
             s.usage[id] = Usage(accountId: id, fetchedAt: now.addingTimeInterval(-50),
                                 windows: [w(.session, r.3, r.4), w(.weekly, r.5, r.6)], plan: r.2, resetCredits: r.7)
         }
-        // Personal in Claude Code and OMP, Studio in Hermes, ChatGPT everywhere; Auernet's OMP login died.
         func hold(_ t: Tool, _ p: Provider, _ i: Int, dead: String? = nil) -> Holding {
             let f = Family(provider: p, access: "sample-\(t.rawValue)-\(i)", accountId: "sample-\(i)")
             return Holding(tool: t, provider: p, family: f, dead: dead, account: f.key)
@@ -99,8 +95,6 @@ enum Snapshot {
     }
 }
 
-/// A menu bar over a wallpaper, so the notch is judged in context. Menus sit left and status
-/// items right, both kept clear of the shape (`clear` = its half-width), like a real menu bar.
 struct Desktop: View {
     let menuHeight: CGFloat
     var clear: CGFloat = 160

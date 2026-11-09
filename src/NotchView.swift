@@ -1,20 +1,17 @@
 import SwiftUI
 import AppKit
 
-// The notch: a black shape that grows out of the camera housing.
-
 enum Theme {
     static let text = Color.white.opacity(0.92)
     static let dim = Color.white.opacity(0.56)
     static let faint = Color.white.opacity(0.4)
     static let track = Color.white.opacity(0.11)
-    static let accent = Color(red: 0.80, green: 0.96, blue: 0.27)      // Pager lime
+    static let accent = Color(red: 0.80, green: 0.96, blue: 0.27)
     static let warn = Color(red: 1.0, green: 0.70, blue: 0.25)
     static let bad = Color(red: 1.0, green: 0.38, blue: 0.34)
     static let claude = Color(red: 0.85, green: 0.47, blue: 0.34)
 
     static func level(_ pct: Double) -> Color { pct >= 100 ? bad : pct >= 85 ? warn : text }
-    /// Each provider's own colour: Claude's coral, ChatGPT's green, OpenRouter's indigo.
     static func brand(_ p: Provider) -> Color {
         switch p {
         case .claude: return Color(red: 0.85, green: 0.47, blue: 0.34)
@@ -24,21 +21,17 @@ enum Theme {
     }
 
     static func mono(_ size: CGFloat, _ w: Font.Weight = .medium) -> Font { .system(size: size, weight: w, design: .monospaced) }
-    /// Numbers: SF with tabular digits, so columns line up without a mono texture.
     static func num(_ size: CGFloat, _ w: Font.Weight = .medium) -> Font { .system(size: size, weight: w).monospacedDigit() }
     static func ui(_ size: CGFloat, _ w: Font.Weight = .medium) -> Font { .system(size: size, weight: w) }
 }
 
-/// Geometry shared by the window controller (hit-testing) and the views (drawing).
 @MainActor
 final class NotchModel: ObservableObject {
     @Published var open = false
     @Published var notchWidth: CGFloat = 186
     @Published var notchHeight: CGFloat = 32
     @Published var hasNotch = true
-    /// Without a notch the shape floats a little below the top edge as a pill.
     @Published var topInset: CGFloat = 0
-    /// The account row under the pointer: it shows the tools it could switch.
     @Published var hoveredRow: String?
 
     static let wing: CGFloat = 66
@@ -48,7 +41,6 @@ final class NotchModel: ObservableObject {
     static let flashHeight: CGFloat = 26
 
     var collapsedSize: CGSize { CGSize(width: notchWidth + 2 * (hasNotch ? Self.wing : Self.wing - 10), height: notchHeight) }
-    /// The header band: the notch's height, or a roomier one for the floating pill once open.
     var headerHeight: CGFloat { hasNotch || !open ? notchHeight : 32 }
 
     func openSize(rows: Int, footer: Bool = false, logins: Int = 0) -> CGSize {
@@ -60,7 +52,6 @@ final class NotchModel: ObservableObject {
     }
 }
 
-/// The notch outline: concave flares where it meets the top edge, round corners below.
 struct NotchShape: Shape {
     var top: CGFloat
     var bottom: CGFloat
@@ -85,8 +76,6 @@ struct NotchShape: Shape {
         return p
     }
 }
-
-// MARK: - Root
 
 struct NotchView: View {
     @ObservedObject var store: Store
@@ -141,9 +130,6 @@ struct NotchView: View {
         .environment(\.colorScheme, .dark)
     }
 
-    /// The band beside the camera, laid out as three fixed columns: left wing | notch | right wing.
-    /// The middle column is exactly the camera housing's width and holds nothing; each wing is
-    /// whatever is left of the shape, and its content is clipped to it, so it can never slide under.
     private var header: some View {
         let t = model.hasNotch ? NotchModel.topRadius : 0
         let wing = max(0, (size.width - 2 * t - model.notchWidth) / 2)
@@ -198,7 +184,9 @@ struct NotchView: View {
                 .frame(height: 14, alignment: .bottom)
                 ForEach(rows) { a in
                     Row(account: a, usage: store.usage[a.id], now: store.now, lowBalance: store.settings.lowBalance,
-                        chips: store.chips(a), hovering: model.hoveredRow == a.id) { store.switchTool($0, to: a) }
+                        chips: store.chips(a), hovering: model.hoveredRow == a.id,
+                        resetting: store.resetting.contains(a.id), resetFailure: store.resetFailure[a.id],
+                        onSwitch: { store.switchTool($0, to: a) }, onReset: { store.useReset(a) })
                         .frame(height: NotchModel.rowHeight)
                         .padding(.horizontal, 16)
                         .contentShape(Rectangle())
@@ -228,7 +216,6 @@ struct NotchView: View {
     }
 }
 
-/// "OpenAI announced: Codex usage limits reset · 3h ago" — public resets, from resets.albastov.com.
 struct Announced: View {
     let item: Announcement
     let now: Date
@@ -259,9 +246,6 @@ struct ColumnLabel: View {
     }
 }
 
-// MARK: - Collapsed pieces
-
-/// The panel in miniature: one hairline per account, as full as its tightest limit.
 struct Minis: View {
     @ObservedObject var store: Store
 
@@ -289,7 +273,6 @@ struct Minis: View {
     }
 }
 
-/// The reset that matters most right now: a maxed-out account's, else the soonest used one.
 struct NextReset: View {
     @ObservedObject var store: Store
 
@@ -337,8 +320,6 @@ struct FlashLine: View {
     }
 }
 
-// MARK: - Open pieces
-
 struct Row: View {
     let account: Account
     let usage: Usage?
@@ -346,7 +327,10 @@ struct Row: View {
     var lowBalance: Double = 5
     var chips: [Chip] = []
     var hovering = false
+    var resetting = false
+    var resetFailure: String?
     var onSwitch: (Tool) -> Void = { _ in }
+    var onReset: () -> Void = {}
 
     static let meterWidth: CGFloat = 100
     static let gap: CGFloat = 16
@@ -359,8 +343,7 @@ struct Row: View {
                     HStack(spacing: 5) {
                         Text(account.label).font(Theme.ui(12.5, .semibold)).foregroundStyle(Theme.text).lineLimit(1).layoutPriority(1)
                         if let c = usage?.resetCredits, c > 0 {
-                            Text("\(c) reset\(c == 1 ? "" : "s")").font(Theme.ui(9.5, .semibold)).foregroundStyle(Theme.accent)
-                                .help("\(c) limit reset\(c == 1 ? "" : "s") banked with OpenAI")
+                            ResetCredits(count: c, busy: resetting, failure: resetFailure, onUse: onReset)
                         }
                     }
                     Text(subtitle).font(Theme.ui(10)).foregroundStyle(Theme.faint).lineLimit(1)
@@ -394,7 +377,73 @@ struct Row: View {
     }
 }
 
-/// OpenRouter, first column: what today cost, with the week in the tooltip.
+struct ResetCredits: View {
+    let count: Int
+    let busy: Bool
+    let failure: String?
+    let onUse: () -> Void
+    @State private var pressing = false
+    @State private var fill: CGFloat = 0
+    @State private var failed = false
+    @State private var hover = false
+
+    static let hold = 0.8
+
+    var body: some View {
+        Group {
+            if busy {
+                label.phaseAnimator([1, 0.35]) { $0.opacity($1) } animation: { _ in .easeInOut(duration: 0.6) }
+            } else {
+                label
+            }
+        }
+        .animation(.easeOut(duration: 0.12), value: hover)
+        .contentShape(Rectangle())
+        .onHover { hover = $0 }
+        .onLongPressGesture(minimumDuration: Self.hold, maximumDistance: 12) {
+            NSHapticFeedbackManager.defaultPerformer.perform(.levelChange, performanceTime: .now)
+            onUse()
+        } onPressingChanged: { p in
+            pressing = p
+            withAnimation(p ? .linear(duration: Self.hold) : .easeOut(duration: 0.2)) { fill = p ? 1 : 0 }
+        }
+        .allowsHitTesting(!busy)
+        .onChange(of: failure) { _, f in
+            failed = f != nil
+            guard f != nil else { return }
+            Task { try? await Task.sleep(for: .seconds(2)); failed = false }
+        }
+        .help(failure.map { "Reset failed: \($0). Hold to try again" }
+              ?? "\(count) limit reset\(count == 1 ? "" : "s") banked with OpenAI. Hold to use one")
+    }
+
+    private var wording: String {
+        if busy { return "Resetting" }
+        if failed { return "Failed" }
+        if hover || pressing { return "Reset?" }
+        return "\(count) reset\(count == 1 ? "" : "s")"
+    }
+
+    private var label: some View {
+        ZStack(alignment: .leading) {
+            face("Resetting", solid: false).hidden()
+            face(wording, solid: busy || (hover && !pressing))
+                .overlay(alignment: .leading) {
+                    face(wording, solid: true)
+                        .mask(alignment: .leading) { GeometryReader { g in Rectangle().frame(width: g.size.width * fill) } }
+                }
+        }
+    }
+
+    private func face(_ text: String, solid: Bool) -> some View {
+        Text(text).font(Theme.ui(9.5, .semibold))
+            .foregroundStyle(solid ? Color.black : failed ? Theme.warn : Theme.accent)
+            .padding(.horizontal, 3).padding(.vertical, 0.5)
+            .background(RoundedRectangle(cornerRadius: 2.5)
+                .fill(solid ? Theme.accent : pressing ? Theme.accent.opacity(0.2) : .clear))
+    }
+}
+
 struct Spend: View {
     let today: Double?
     let week: Double?
@@ -412,7 +461,6 @@ struct Spend: View {
     }
 }
 
-/// OpenRouter, second column: credit used as the fill, what's left as the number.
 struct BalanceMeter: View {
     let balance: Balance?
     let low: Double
@@ -442,8 +490,6 @@ struct BalanceMeter: View {
     }
 }
 
-/// A hairline bar with a pace tick: the tick is how far through the window we are, so a fill
-/// past the tick means you are burning faster than the window allows.
 struct Meter: View {
     let window: UsageWindow?
     let now: Date
@@ -461,7 +507,6 @@ struct Meter: View {
                 }
                 .frame(width: w, height: 3)
                 .overlay(alignment: .leading) {
-                    // Pace: how far through the window we are. Inside the fill it is cut out in black.
                     if let win = window, let e = win.elapsed(at: now), e > 0.03, e < 0.97 {
                         let inFill = e * 100 < win.percent
                         Capsule().fill(inFill ? Color.black : Color.white.opacity(0.45))
@@ -566,7 +611,6 @@ struct IconButton: View {
     }
 }
 
-/// Brand marks (Simple Icons, CC0). Claude keeps its colour; OpenAI is white.
 struct Mark: View {
     let provider: Provider
     var tint: Color? = nil
@@ -590,11 +634,6 @@ struct Mark: View {
     }()
 }
 
-/// The tools an account is signed in to, bright. On hover the others show dim; a click on one
-/// switches that tool to this account.
-/// One fixed slot per app, spanning both lines of the row. An app using this account shows its
-/// icon in full colour, always. On hover the other apps show faded and grey; a click switches
-/// that app to this account. Slots never move, so hovering shifts nothing.
 struct ToolChips: View {
     let chips: [Chip]
     let hovering: Bool
@@ -639,7 +678,6 @@ struct ToolChip: View {
     }
 }
 
-/// Small monochrome marks for the tools: SF Symbols, and π for OMP (oh-my-pi).
 struct ToolGlyph: View {
     let tool: Tool
 
@@ -651,7 +689,6 @@ struct ToolGlyph: View {
         }
     }
 
-    /// Each app's own icon: from its .app on this Mac, OMP's from its repo.
     static let icons: [Tool: NSImage] = {
         var out: [Tool: NSImage] = [:]
         let apps: [Tool: [String]] = [.claudeCode: ["/Applications/Claude.app"],
@@ -669,8 +706,6 @@ struct ToolGlyph: View {
     static let ompSVG = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 120 90\" width=\"120\" height=\"90\">   <!-- Pi symbol with plugin connector -->   <!-- Horizontal bar -->   <rect x=\"10\" y=\"8\" width=\"100\" height=\"12\" rx=\"2\" fill=\"#fafafa\"/>   <!-- Left leg -->   <rect x=\"25\" y=\"20\" width=\"12\" height=\"62\" rx=\"2\" fill=\"#fafafa\"/>   <!-- Right leg -->   <rect x=\"75\" y=\"20\" width=\"12\" height=\"45\" rx=\"2\" fill=\"#fafafa\"/>   <!-- Plugin connector -->   <rect x=\"71\" y=\"55\" width=\"20\" height=\"16\" rx=\"3\" fill=\"#f97316\"/>   <rect x=\"76\" y=\"59\" width=\"3\" height=\"8\" rx=\"1\" fill=\"#0d0d0d\"/>   <rect x=\"82\" y=\"59\" width=\"3\" height=\"8\" rx=\"1\" fill=\"#0d0d0d\"/>   <!-- Decorative dots -->   <circle cx=\"18\" cy=\"14\" r=\"2\" fill=\"#f97316\" opacity=\"0.8\"/>   <circle cx=\"102\" cy=\"14\" r=\"2\" fill=\"#f97316\" opacity=\"0.8\"/> </svg> "
 }
 
-
-/// "Logins": which account each tool uses, and a menu to move it to any other.
 struct Logins: View {
     @ObservedObject var store: Store
     static let rowHeight: CGFloat = 22

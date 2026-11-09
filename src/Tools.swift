@@ -1,32 +1,18 @@
 import Foundation
 
-// Account switching, part 2: reading and writing each tool's own credential store. Every write
-// is preceded by a backup and done in one step, so a failure leaves the tool as it was.
-
-/// A login one tool holds right now.
 struct Holding: Equatable {
     var tool: Tool
     var provider: Provider
-    /// Where inside the tool, for display: a Hermes home ("default", "orion"), an OMP row ("row 7").
     var location: String?
-    /// The vault slot's home when this family moves out (Hermes Codex: one family per home).
     var home: String?
     var family: Family
-    /// Why it no longer works, if it doesn't.
     var dead: String?
-    /// Whose it is ("claude:<uuid>"); nil = a login Brim can't place.
     var account: String?
 }
 
-// MARK: - Claude Code
-
-/// Keychain item "Claude Code-credentials" (account $USER) plus `oauthAccount` in ~/.claude.json.
-/// Claude Code re-reads the item before each refresh check (cached 30 s) and refreshes with what
-/// it finds there, so a running session moves to the new login on its next request.
 enum ClaudeCode {
     static var user: String { ProcessInfo.processInfo.environment["USER"].flatMap { $0.isEmpty ? nil : $0 } ?? NSUserName() }
 
-    /// The whole item: `{"claudeAiOauth": {...}, ...}`, read through `security` (on the item's ACL).
     static func payload() -> [String: Any]? {
         guard let raw = Shell.run("/usr/bin/security", ["find-generic-password", "-a", user, "-s", Paths.keychainService, "-w"]) else { return nil }
         return Files.object(Data(raw.utf8))
@@ -51,7 +37,6 @@ enum ClaudeCode {
         return Holding(tool: .claudeCode, provider: .claude, family: f, dead: dead, account: f.key)
     }
 
-    /// Installs `f`, and `oauthAccount` built from `profile` (/api/oauth/profile with f's token).
     static func install(_ f: Family, profile: [String: Any]) throws -> [Holding] {
         let lock = try RefreshLock()
         defer { lock.release() }
@@ -67,7 +52,6 @@ enum ClaudeCode {
         do {
             if let json { try Files.write(try JSONText.replacing("oauthAccount", in: json, with: account(profile)), to: Paths.claudeJSON) }
         } catch {
-            // Put the item back as it was, so Claude Code never sees half a switch.
             if let before { try? write(before, expecting: nil) } else { _ = Shell.run("/usr/bin/security", ["delete-generic-password", "-a", user, "-s", Paths.keychainService]) }
             throw error
         }
@@ -85,7 +69,6 @@ enum ClaudeCode {
         return r
     }
 
-    /// `oauthAccount` the way Claude Code writes it after a profile fetch.
     static func account(_ profile: [String: Any]) -> [String: Any] {
         let a = profile["account"] as? [String: Any] ?? [:]
         let o = profile["organization"] as? [String: Any] ?? [:]
@@ -110,8 +93,6 @@ enum ClaudeCode {
         return r
     }
 
-    /// Writes the item the way Claude Code does: `security -i` with the JSON as hex on stdin
-    /// (argv only when too long for it), then reads it back.
     static func write(_ p: [String: Any], expecting access: String?) throws {
         let data = try JSONSerialization.data(withJSONObject: p, options: [.withoutEscapingSlashes])
         let hex = data.map { String(format: "%02x", $0) }.joined()
@@ -125,8 +106,6 @@ enum ClaudeCode {
         }
     }
 
-    /// Claude Code's refresh lock (a proper-lockfile directory, stale after 60 s). Holding it keeps
-    /// a running Claude Code from refreshing while the login changes under it.
     struct RefreshLock {
         let url = Paths.claudeDir.appendingPathComponent(".oauth_refresh.lock")
         private(set) var mine = false
@@ -135,9 +114,9 @@ enum ClaudeCode {
             let deadline = Date().addingTimeInterval(15)
             while true {
                 if mkdir(url.path, 0o755) == 0 { mine = true; return }
-                if errno == ENOENT { return }       // no ~/.claude: nothing running to lock out
+                if errno == ENOENT { return }
                 let m = (try? FileManager.default.attributesOfItem(atPath: url.path)[.modificationDate]) as? Date
-                if m.map({ Date().timeIntervalSince($0) > 60 }) ?? true { return }   // stale
+                if m.map({ Date().timeIntervalSince($0) > 60 }) ?? true { return }
                 guard Date() < deadline else { throw ProviderError.other("Claude Code is refreshing its login, try again") }
                 usleep(250_000)
             }
@@ -147,10 +126,6 @@ enum ClaudeCode {
     }
 }
 
-// MARK: - Codex CLI
-
-/// `$CODEX_HOME/auth.json`. Codex reads it at start; a running session never adopts another
-/// account (its guarded reload refuses an account change), so new sessions get the new login.
 enum CodexCLI {
     static var file: URL { Paths.codexHome.appendingPathComponent("auth.json") }
 
@@ -183,12 +158,6 @@ enum CodexCLI {
     }
 }
 
-// MARK: - Hermes
-
-/// Every Hermes home: `~/.hermes` ("default") and each `~/.hermes/profiles/*`.
-/// Claude: a long-lived token in each `.env`'s ANTHROPIC_TOKEN, re-read every gateway turn.
-/// Codex: `auth.json` `providers.openai-codex` per home, which Hermes syncs its pool from
-/// (under `auth.lock`) before using or refreshing a login.
 enum Hermes {
     static func homes() -> [(name: String, url: URL)] {
         let root = Paths.hermesRoot
@@ -221,8 +190,6 @@ enum Hermes {
         return out
     }
 
-    // .env: only the ANTHROPIC_TOKEN line is ever touched.
-
     static func envLine(_ line: String) -> (prefix: String, quote: String, value: String)? {
         var s = Substring(line)
         var prefix = String(s.prefix { $0 == " " || $0 == "\t" })
@@ -240,7 +207,6 @@ enum Hermes {
             .first { !$0.value.isEmpty }?.value
     }
 
-    /// The same text with every set ANTHROPIC_TOKEN line holding `token`; nil if there's none.
     static func rewrite(_ text: String, token: String) -> String? {
         var lines = text.components(separatedBy: "\n")
         var hit = false
@@ -253,7 +219,6 @@ enum Hermes {
         return hit ? lines.joined(separator: "\n") : nil
     }
 
-    /// Sets ANTHROPIC_TOKEN in every home that sets it. All files or none.
     static func installToken(_ f: Family, minted: [String: Minted]) throws -> [Holding] {
         let old = read(minted: minted).filter { $0.provider == .claude }
         let targets = homes().compactMap { h -> (name: String, url: URL, data: Data, new: Data)? in
@@ -274,15 +239,12 @@ enum Hermes {
         return old
     }
 
-    // auth.json: providers.openai-codex, and the pool entry that mirrors it.
-
     static func codex(_ o: [String: Any], home: String) -> Holding? {
         guard let st = (o["providers"] as? [String: Any])?["openai-codex"] as? [String: Any],
               let t = st["tokens"] as? [String: Any], let at = t["access_token"] as? String, !at.isEmpty else { return nil }
         var f = Family.codex(access: at, refresh: t["refresh_token"] as? String, idToken: t["id_token"] as? String,
                              accountId: t["account_id"] as? String)
         var last = (st["last_refresh"] as? String).flatMap(JSON.parseDate)
-        // A pool entry that rotated after the singleton holds the live end of the chain.
         let pool = ((o["credential_pool"] as? [String: Any])?["openai-codex"] as? [[String: Any]]) ?? []
         if let e = pool.first(where: { $0["source"] as? String == "device_code" }),
            let pa = e["access_token"] as? String, pa != at,
@@ -305,7 +267,6 @@ enum Hermes {
         }.map(\.name)
     }
 
-    /// Installs `f` as one home's Codex login, under Hermes's own `auth.lock`.
     static func installCodex(_ f: Family, home: String) throws -> [Holding] {
         let dir = url(home)
         let file = dir.appendingPathComponent("auth.json")
@@ -343,11 +304,6 @@ enum Hermes {
     }
 }
 
-// MARK: - OMP
-
-/// `~/.omp/agent/agent.db`, table `auth_credentials`. OMP lists rows with no `disabled_cause`
-/// and re-reads them whenever `auth_change_revision` moves (the table's triggers bump it), on its
-/// next credential lookup. A row under an unexpired refresh lease is never moved.
 enum OMP {
     static func provider(_ p: Provider) -> String { p == .claude ? "anthropic" : "openai-codex" }
 
@@ -379,8 +335,6 @@ enum OMP {
                        dead: row["disabled_cause"] as? String, account: f.key)
     }
 
-    /// Replaces the live rows for f's provider with one row for `f`, in one transaction that
-    /// first checks no refresh lease is out on them. Dead rows and other providers stay.
     static func install(_ f: Family) throws -> [Holding] {
         let pid = provider(f.provider)
         guard let all = query("SELECT * FROM auth_credentials") else { throw ProviderError.other("can't read \(Paths.ompDB.path)") }
@@ -419,16 +373,13 @@ enum OMP {
                 return rows.compactMap(holding)
             }
             guard r.err.contains("CHECK constraint failed") else { throw ProviderError.other("OMP write failed: \(r.err)") }
-            usleep(500_000)     // OMP is refreshing that login right now; its lease lasts 15 s at most.
+            usleep(500_000)
         }
         throw ProviderError.other("OMP is refreshing its login, try again")
     }
 }
 
-// MARK: - All of them
-
 enum Tools {
-    /// What every tool on this Mac holds now. Reads only.
     static func scan(minted: [String: Minted]) -> [Holding] {
         var out: [Holding] = []
         if let h = ClaudeCode.read() { out.append(h) }
@@ -447,12 +398,10 @@ enum Tools {
         }
     }
 
-    /// The vault homes a switch of `t` writes for `p`: one per Hermes home for Codex, else one.
     static func places(_ t: Tool, _ p: Provider) -> [String?] {
         t == .hermes && p == .codex ? Hermes.codexHomes() : [nil]
     }
 
-    /// Installs `f` and returns the logins it displaced.
     static func install(_ t: Tool, home: String?, _ f: Family, profile: [String: Any]?, minted: [String: Minted]) throws -> [Holding] {
         switch t {
         case .claudeCode: return try ClaudeCode.install(f, profile: profile ?? [:])
@@ -466,10 +415,7 @@ enum Tools {
     }
 }
 
-// MARK: - Editing one key of a large JSON file
-
 enum JSONText {
-    /// Replaces one top-level key's value, leaving every other byte of the file as it was.
     static func replacing(_ key: String, in data: Data, with value: [String: Any]) throws -> Data {
         let b = [UInt8](data)
         let bad = ProviderError.other("unexpected JSON")
@@ -529,13 +475,11 @@ enum JSONText {
             i += 1
         }
         if out == nil {
-            // Not there yet: add it as the first key.
             var j = open + 1
             while j < b.count, isSpace(b[j]) { j += 1 }
             let empty = j < b.count && b[j] == 0x7d
             out = Data(b[...open]) + Data("\n  \"\(key)\": ".utf8) + rendered + Data((empty ? "\n" : ",").utf8) + Data(b[(open + 1)...])
         }
-        // Never hand back something the tool can't read.
         guard let result = out, let check = Files.object(result), check[key] != nil else { throw bad }
         return result
     }

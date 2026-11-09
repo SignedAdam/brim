@@ -12,6 +12,7 @@ Hover the notch and it opens: every account's 5-hour session and weekly limit, h
 
 - **Claude** and **ChatGPT / Codex**, as many accounts of each as you like. Every account Claude Code, Codex, Hermes Agent or OMP is signed in to on this Mac is picked up automatically; add others with a browser sign-in.
 - **Account switching**: each row shows the tools signed in as that account. Hover a row and the other tools appear dim; click one to sign that tool in as this account. The login it had is parked in Brim and kept fresh, so switching back needs no new sign-in.
+- **Banked resets**: a ChatGPT account with resets banked shows "2 resets" next to its name. Press and hold it to use one; letting go early cancels.
 - **OpenRouter**: credit left and today's spend. A key in `$OPENROUTER_API_KEY` (or `~/.config/secrets/global.env`) is picked up by name, never copied; or add one with **Add OpenRouter Key…** / `brim add openrouter`.
 - **Alerts** at thresholds you pick, when a balance runs low, when unused weekly quota is about to expire, when a limit resets, and when OpenAI or Anthropic announce a reset in public ([resets.albastov.com](https://resets.albastov.com)).
 - **Agent-friendly**: `brim status --json`, plus hooks that get every alert as JSON, so an agent can spend leftover quota or pause heavy work.

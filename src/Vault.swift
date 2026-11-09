@@ -1,13 +1,6 @@
 import Foundation
 import CryptoKit
 
-// Account switching, part 1: what a login is and where Brim parks it.
-//
-// A login ("token family": one sign-in's access + refresh tokens) always has exactly one holder.
-// Claude and Codex refresh tokens rotate, so a copy two holders share dies the moment either one
-// refreshes. A family is either parked in Brim's vault (Brim keeps it fresh) or installed in
-// exactly one tool (the tool owns it; Brim never refreshes or reuses it there).
-
 enum Tool: String, Codable, CaseIterable {
     case claudeCode = "claude-code", codex, hermes, omp
 
@@ -28,7 +21,6 @@ enum Tool: String, Codable, CaseIterable {
         }
     }
 
-    /// Whether the tool is set up on this Mac at all.
     var installed: Bool {
         let fm = FileManager.default
         switch self {
@@ -39,20 +31,16 @@ enum Tool: String, Codable, CaseIterable {
         }
     }
 
-    /// When a running copy of the tool notices a switch, if it's not on its next request.
     var pickup: String? { self == .codex ? "new Codex sessions use it" : nil }
 }
 
-/// One sign-in's tokens, and whose they are.
 struct Family: Codable, Equatable {
     var provider: Provider
     var access: String
     var refresh: String?
     var expiresAt: Date?
-    /// When the grant itself ends (Claude grants die about 30 days after sign-in, refreshed or not).
     var refreshExpiresAt: Date?
     var idToken: String?
-    /// Claude account uuid, ChatGPT account id.
     var accountId: String?
     var email: String?
     var orgId: String?
@@ -62,16 +50,13 @@ struct Family: Codable, Equatable {
     var rateLimitTier: String?
 
     var key: String? { accountId.map { "\(provider.rawValue):\($0)" } }
-    /// Names the family without revealing it.
     var fingerprint: String { Secret.fingerprint(refresh ?? access) }
     func expired(_ now: Date) -> Bool { (expiresAt ?? .distantFuture) <= now }
-    /// Past saving: the grant ended, or a token without a refresh token expired.
     func gone(_ now: Date) -> Bool {
         if let r = refreshExpiresAt, r <= now { return true }
         return refresh == nil && expired(now)
     }
 
-    /// A ChatGPT family; account and email come from the tokens' own claims.
     static func codex(access: String, refresh: String?, idToken: String?, accountId: String? = nil) -> Family {
         let auth = Codex.auth(idToken).isEmpty ? Codex.auth(access) : Codex.auth(idToken)
         let profile = jwtClaims(access)["https://api.openai.com/profile"] as? [String: Any]
@@ -83,17 +68,13 @@ struct Family: Codable, Equatable {
     }
 }
 
-/// A family parked in the vault: the login `account` uses in `tool`, while the tool holds another.
 struct Slot: Codable, Equatable {
     var account: String
     var tool: Tool
-    /// The Hermes home, for families that live in one home's auth.json (Codex). Nil elsewhere.
     var home: String?
     var family: Family
     var parkedAt: Date
-    /// Last time Brim refreshed it while parked.
     var refreshedAt: Date?
-    /// Set when keeping it fresh failed for good; the next switch signs in again instead.
     var error: String?
 }
 
@@ -102,14 +83,10 @@ struct Minted: Codable, Equatable {
     var expiresAt: Date?
 }
 
-/// `~/.brim/vault.json`, owner-only. Not the Keychain: Brim is rebuilt and re-signed often, and
-/// Keychain ACLs tied to the signature would ask for a password after every build.
 struct Vault: Codable, Equatable {
     var slots: [Slot] = []
-    /// Hermes long-lived tokens Brim minted, by fingerprint, so one sitting in a `.env` is known.
     var minted: [String: Minted] = [:]
 
-    /// The vault on disk. A file that exists but can't be read is an error, never an empty vault.
     static func read() throws -> Vault {
         guard let data = try? Data(contentsOf: Paths.vault) else { return Vault() }
         return try JSON.decoder.decode(Vault.self, from: data)
@@ -133,8 +110,6 @@ struct Vault: Codable, Equatable {
         index(account, tool, home).map { slots.remove(at: $0) }
     }
 
-    /// Runs `body` on a freshly read vault while holding the vault lock, which the app and the CLI
-    /// share, so a switch and a keep-fresh refresh never work on the same family at once.
     static func locked<T>(_ body: (inout Vault) async throws -> T) async throws -> T {
         Paths.ensure()
         let lock = try FileLock(Paths.vaultLock, timeout: 120)
@@ -150,7 +125,6 @@ enum Secret {
     }
 }
 
-/// An exclusive `flock`, the kind Hermes takes on `auth.lock`. Retries until `timeout`.
 final class FileLock {
     private var fd: Int32
 
@@ -176,7 +150,6 @@ final class FileLock {
 }
 
 enum Files {
-    /// Replaces a file in one step (temp file + rename), keeping its mode; follows a symlink.
     static func write(_ data: Data, to url: URL) throws {
         let target = url.resolvingSymlinksInPath()
         let mode = (try? FileManager.default.attributesOfItem(atPath: target.path)[.posixPermissions] as? NSNumber)?.int16Value ?? 0o600
@@ -199,8 +172,6 @@ enum Files {
     }
 }
 
-/// Copies of a tool's store taken before every write: `~/.brim/backups/<name>-<time>`, owner-only,
-/// the newest 20 of each kept.
 enum Backup {
     static func save(_ name: String, _ data: Data) throws {
         let dir = Paths.backups
@@ -219,7 +190,6 @@ enum Backup {
 }
 
 enum Stamp {
-    /// "2026-10-30T09:07:37.123456Z", the shape Codex and Hermes write.
     static func iso(_ d: Date) -> String {
         let f = DateFormatter()
         f.locale = Locale(identifier: "en_US_POSIX")
