@@ -84,7 +84,7 @@ enum Snapshot {
         }
         s.installed = Tool.allCases
         s.holdings = [hold(.claudeCode, .claude, 0), hold(.omp, .claude, 0), hold(.hermes, .claude, 1),
-                      hold(.codex, .codex, 2), hold(.hermes, .codex, 2), hold(.omp, .codex, 2),
+                      hold(.codex, .codex, 2), hold(.omp, .codex, 2),
                       hold(.omp, .claude, 3, dead: "refresh rejected (invalid_grant)")]
         s.accounts.append(Account(id: "sample-or", provider: .openrouter, source: .apiKey, label: "OpenRouter"))
         s.usage["sample-or"] = Usage(accountId: "sample-or", fetchedAt: now.addingTimeInterval(-50),

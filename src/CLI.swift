@@ -12,9 +12,10 @@ enum CLI {
           brim list                 accounts and which tools hold them
           brim where [--json]       what each tool (Claude Code, Codex, Hermes, OMP) is
                                     signed in as, and the logins Brim has parked
-          brim switch <account> claude-code|codex|hermes|omp
+          brim switch <account> claude-code|codex|hermes|omp [--no-open]
                                     sign that tool in as <account>; the previous login is
-                                    parked, so switching back needs no new sign-in
+                                    parked, so switching back needs no new sign-in; --no-open
+                                    prints the sign-in link if one is needed
           brim add claude|codex [--label NAME] [--no-open]
                                     sign in to another account in the browser; --no-open
                                     prints the sign-in link instead of opening it
@@ -198,24 +199,27 @@ enum CLI {
         }
         if w.tools.isEmpty { print("no tool on this Mac holds a Claude or Codex login") }
         for s in w.vault {
-            print("vault  \(s.label ?? s.account) for \(s.tool.name)\(s.home.map { " [\($0)]" } ?? "")  \(s.state)\(exp(s.expiresAt))")
+            print("vault  \(s.label ?? s.account) for \(s.tool.name)  \(s.state)\(exp(s.expiresAt))")
         }
     }
 
     static func switchTool(_ args: [String]) {
+        let open = !args.contains("--no-open")
+        let args = args.filter { $0 != "--no-open" }
         guard args.count == 2, let tool = Tool(rawValue: args[1]) else {
-            print("usage: brim switch <account> claude-code|codex|hermes|omp"); exit(2)
+            print("usage: brim switch <account> claude-code|codex|hermes|omp [--no-open]"); exit(2)
         }
         let st = scanned()
         let list = MainActor.assumeIsolated { st.accounts }
         guard let i = find(args[0], in: list) else { print("no account \(args[0])"); exit(1) }
         let a = list[i]
         if Switcher.needsSignIn(tool, a) {
-            print("Opening your browser to sign \(tool.name) in as \(a.label)…")
+            print(open ? "Opening your browser to sign \(tool.name) in as \(a.label)…" : "Open this to sign \(tool.name) in as \(a.label):")
+            fflush(stdout)
         }
         do {
             let line = try await_ {
-                try await Switcher.run(tool, to: a) {
+                try await Switcher.run(tool, to: a, open: open) {
                     var all = accounts()
                     guard let j = all.firstIndex(where: { $0.id == a.id }) else { return }
                     all[j].source = .tool

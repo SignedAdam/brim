@@ -3,81 +3,104 @@ import Foundation
 enum Switcher {
     static let installMargin: TimeInterval = 15 * 60
 
-    static func run(_ tool: Tool, to a: Account, onHandOver: () async -> Void = {}) async throws -> String {
+    static func run(_ tool: Tool, to a: Account, open: Bool = true, onHandOver: () async -> Void = {}) async throws -> String {
         let p = a.provider
         guard let key = a.key else { throw ProviderError.other("\(a.label) has no account id yet") }
         guard tool.providers.contains(p) else { throw ProviderError.other("\(tool.name) doesn't take \(p.name) accounts") }
         guard tool.installed else { throw ProviderError.other("\(tool.name) isn't set up on this Mac") }
-        let longLived = tool == .hermes && p == .claude
-        var places = Tools.places(tool, p)
-        if places.isEmpty { places = ["default"] }
-        var own = longLived ? nil : ownFamily(a)
+        let longLived = tool == .hermes
+        let v = try Vault.read()
+        let current = Tools.read(tool, p, minted: v.minted)
+        if !current.isEmpty, current.allSatisfy({ $0.account == key && $0.dead == nil }) { return "\(tool.name) → \(a.label)" }
 
-        for home in places {
-            let v = try Vault.read()
-            let current = held(tool, p, home, minted: v.minted)
-            if !current.isEmpty, current.allSatisfy({ $0.account == key && $0.dead == nil }) { continue }
-
-            var fresh: Family?
-            if !usable(v.slot(key, tool, home), Date()) {
-                if let o = own {
-                    fresh = try await refresh(o)
-                    own = nil
-                    await onHandOver()
-                } else {
-                    let f = try await SignIn.family(p, longLived: longLived)
-                    guard f.key == key else {
-                        throw ProviderError.other("the browser signed in as \(f.email ?? "another account"), not \(a.label)")
+        var fresh: Family?
+        if !usable(v.slot(key, tool), Date()) {
+            if !longLived, let o = ownFamily(a) {
+                fresh = try await refresh(o)
+                await onHandOver()
+            } else if p == .codex {
+                let logins = try await SignIn.codex(open: open) { f in f.key == key ? wanted(key, except: tool) : 0 }
+                guard logins[0].key == key else {
+                    throw ProviderError.other("the browser signed in as \(logins[0].email ?? "another account"), not \(a.label)")
+                }
+                fresh = logins[0]
+                if logins.count > 1 {
+                    try await Vault.locked { v in
+                        park(Array(logins.dropFirst()), key, in: &v, except: tool)
+                        try v.save()
                     }
-                    fresh = f
                 }
-            }
-
-            try await Vault.locked { v in
-                let before = v
-                let slot = v.take(key, tool, home)
-                guard var f = fresh ?? slot?.family else { throw ProviderError.other("\(a.label)'s login for \(tool.name) went missing, try again") }
-                try v.save()
-                func putBack(_ fam: Family) {
-                    var s = slot ?? Slot(account: key, tool: tool, home: home, family: fam, parkedAt: Date())
-                    s.family = fam
-                    s.error = nil
-                    v = before
-                    v.put(s)
-                    try? v.save()
+            } else {
+                let f = try await SignIn.family(p, longLived: longLived, open: open)
+                guard f.key == key else {
+                    throw ProviderError.other("the browser signed in as \(f.email ?? "another account"), not \(a.label)")
                 }
-
-                var profile: [String: Any]?
-                do {
-                    if f.refresh != nil, f.expired(Date().addingTimeInterval(installMargin)) { f = try await refresh(f) }
-                    if tool == .claudeCode { profile = try await HTTP.json(Claude.request("profile", f.access)) }
-                } catch {
-                    putBack(f)
-                    throw error
-                }
-
-                let out: [Holding]
-                do {
-                    out = try Tools.install(tool, home: home, f, profile: profile, minted: v.minted)
-                } catch {
-                    putBack(f)
-                    throw error
-                }
-
-                var seen = Set<String>()
-                for h in out where h.dead == nil && !h.family.gone(Date()) && h.family.access != f.access {
-                    guard let k = h.account, seen.insert(h.family.fingerprint).inserted else { continue }
-                    v.put(Slot(account: k, tool: tool, home: home, family: h.family, parkedAt: Date()))
-                }
-                if longLived { v.minted[Secret.fingerprint(f.access)] = Minted(account: key, expiresAt: f.expiresAt) }
-                do { try v.save() } catch {
-                    log("switch: \(tool.name) now holds \(a.label), but the vault couldn't keep the previous login: \(error)")
-                    throw ProviderError.other("\(tool.name) switched, but its previous login couldn't be parked (\(error))")
-                }
-                log("switch: \(tool.name)\(home.map { " [\($0)]" } ?? "") -> \(a.label)")
+                fresh = f
             }
         }
+
+        try await Vault.locked { v in
+            let before = v
+            let slot = v.take(key, tool)
+            guard var f = fresh ?? slot?.family else { throw ProviderError.other("\(a.label)'s login for \(tool.name) went missing, try again") }
+            try v.save()
+            func putBack(_ fam: Family) {
+                var s = slot ?? Slot(account: key, tool: tool, family: fam, parkedAt: Date())
+                s.family = fam
+                s.error = nil
+                v = before
+                v.put(s)
+                try? v.save()
+            }
+
+            var profile: [String: Any]?
+            do {
+                if f.refresh != nil, f.expired(Date().addingTimeInterval(installMargin)) { f = try await refresh(f) }
+                if tool == .claudeCode { profile = try await HTTP.json(Claude.request("profile", f.access)) }
+            } catch {
+                putBack(f)
+                throw error
+            }
+
+            let out: [Holding]
+            do {
+                out = try Tools.install(tool, f, profile: profile, minted: v.minted)
+            } catch {
+                putBack(f)
+                throw error
+            }
+
+            var seen = Set<String>()
+            for h in out where h.dead == nil && !h.family.gone(Date()) && h.family.access != f.access {
+                guard let k = h.account, seen.insert(h.family.fingerprint).inserted else { continue }
+                v.put(Slot(account: k, tool: tool, family: h.family, parkedAt: Date()))
+            }
+            if longLived { v.minted[Secret.fingerprint(f.access)] = Minted(account: key, expiresAt: f.expiresAt) }
+            do { try v.save() } catch {
+                log("switch: \(tool.name) now holds \(a.label), but the vault couldn't keep the previous login: \(error)")
+                throw ProviderError.other("\(tool.name) switched, but its previous login couldn't be parked (\(error))")
+            }
+            log("switch: \(tool.name) -> \(a.label)")
+        }
         return "\(tool.name) → \(a.label)"
+    }
+
+    static func missing(_ key: String, _ v: Vault, except: Tool?) -> [Tool] {
+        Tool.allCases.filter { t in
+            t != except && t.installed && t.providers.contains(.codex)
+                && !Tools.read(t, .codex, minted: v.minted).contains { $0.account == key && $0.dead == nil }
+                && !usable(v.slot(key, t), Date())
+        }
+    }
+
+    static func wanted(_ key: String, except: Tool?, own: Int = 0) -> Int {
+        max(0, missing(key, Vault.load(), except: except).count - own)
+    }
+
+    static func park(_ logins: [Family], _ key: String, in v: inout Vault, except: Tool?) {
+        for (t, f) in zip(missing(key, v, except: except), logins) {
+            v.put(Slot(account: key, tool: t, family: f, parkedAt: Date()))
+        }
     }
 
     static func usable(_ s: Slot?, _ now: Date) -> Bool {
@@ -116,18 +139,10 @@ enum Switcher {
     static func needsSignIn(_ tool: Tool, _ a: Account, now: Date = Date()) -> Bool {
         guard let key = a.key, tool.providers.contains(a.provider) else { return false }
         let v = Vault.load()
-        let places = Tools.places(tool, a.provider)
-        let missing = (places.isEmpty ? ["default"] : places).filter { home in
-            let current = held(tool, a.provider, home, minted: v.minted)
-            let there = !current.isEmpty && current.allSatisfy { $0.account == key && $0.dead == nil }
-            return !there && !usable(v.slot(key, tool, home), now)
-        }
-        let longLived = tool == .hermes && a.provider == .claude
-        return missing.count > (!longLived && ownFamily(a) != nil ? 1 : 0)
-    }
-
-    static func held(_ tool: Tool, _ p: Provider, _ home: String?, minted: [String: Minted]) -> [Holding] {
-        Tools.read(tool, p, minted: minted).filter { home == nil || $0.home == home }
+        let current = Tools.read(tool, a.provider, minted: v.minted)
+        if !current.isEmpty, current.allSatisfy({ $0.account == key && $0.dead == nil }) { return false }
+        if usable(v.slot(key, tool), now) { return false }
+        return tool == .hermes || ownFamily(a) == nil
     }
 
     static func keepFresh() async {
@@ -173,7 +188,6 @@ struct Where: Encodable {
         var account: String
         var label: String?
         var tool: Tool
-        var home: String?
         var state: String
         var expiresAt: Date?
         var parkedAt: Date
@@ -190,7 +204,7 @@ struct Where: Encodable {
                  expiresAt: h.family.expiresAt, fingerprint: h.family.fingerprint)
         }
         let parked = vault.slots.map { s in
-            Parked(account: s.account, label: labels[s.account], tool: s.tool, home: s.home,
+            Parked(account: s.account, label: labels[s.account], tool: s.tool,
                    state: s.error.map { "parked, dead: \($0)" } ?? (s.family.gone(now) ? "parked, expired" : "parked"),
                    expiresAt: s.family.expiresAt, parkedAt: s.parkedAt, fingerprint: s.family.fingerprint)
         }

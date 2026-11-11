@@ -17,7 +17,8 @@ enum Tool: String, Codable, CaseIterable {
         switch self {
         case .claudeCode: return [.claude]
         case .codex: return [.codex]
-        case .hermes, .omp: return [.claude, .codex]
+        case .hermes: return [.claude]
+        case .omp: return [.claude, .codex]
         }
     }
 
@@ -71,7 +72,6 @@ struct Family: Codable, Equatable {
 struct Slot: Codable, Equatable {
     var account: String
     var tool: Tool
-    var home: String?
     var family: Family
     var parkedAt: Date
     var refreshedAt: Date?
@@ -89,25 +89,27 @@ struct Vault: Codable, Equatable {
 
     static func read() throws -> Vault {
         guard let data = try? Data(contentsOf: Paths.vault) else { return Vault() }
-        return try JSON.decoder.decode(Vault.self, from: data)
+        var v = try JSON.decoder.decode(Vault.self, from: data)
+        v.slots.removeAll { !$0.tool.providers.contains($0.family.provider) }
+        return v
     }
 
     static func load() -> Vault { (try? read()) ?? Vault() }
 
     func save() throws { try JSON.write(self, Paths.vault) }
 
-    func index(_ account: String, _ tool: Tool, _ home: String?) -> Int? {
-        slots.firstIndex { $0.account == account && $0.tool == tool && $0.home == home }
+    func index(_ account: String, _ tool: Tool) -> Int? {
+        slots.firstIndex { $0.account == account && $0.tool == tool }
     }
 
-    func slot(_ account: String, _ tool: Tool, _ home: String?) -> Slot? { index(account, tool, home).map { slots[$0] } }
+    func slot(_ account: String, _ tool: Tool) -> Slot? { index(account, tool).map { slots[$0] } }
 
     mutating func put(_ s: Slot) {
-        if let i = index(s.account, s.tool, s.home) { slots[i] = s } else { slots.append(s) }
+        if let i = index(s.account, s.tool) { slots[i] = s } else { slots.append(s) }
     }
 
-    mutating func take(_ account: String, _ tool: Tool, _ home: String?) -> Slot? {
-        index(account, tool, home).map { slots.remove(at: $0) }
+    mutating func take(_ account: String, _ tool: Tool) -> Slot? {
+        index(account, tool).map { slots.remove(at: $0) }
     }
 
     static func locked<T>(_ body: (inout Vault) async throws -> T) async throws -> T {

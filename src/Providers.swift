@@ -217,7 +217,7 @@ enum Codex {
         return (at, (o["refresh_token"] as? String) ?? refresh, o["id_token"] as? String)
     }
 
-    static func authorizeURL(pkce: PKCE) -> URL {
+    static func authorizeURL(pkce: PKCE, hint: String? = nil) -> URL {
         var c = URLComponents(string: "\(issuer)/oauth/authorize")!
         c.queryItems = [
             .init(name: "response_type", value: "code"), .init(name: "client_id", value: clientId),
@@ -227,7 +227,7 @@ enum Codex {
             .init(name: "id_token_add_organizations", value: "true"),
             .init(name: "codex_cli_simplified_flow", value: "true"),
             .init(name: "state", value: pkce.state), .init(name: "originator", value: "codex_cli_rs"),
-        ]
+        ] + (hint.map { [.init(name: "login_hint", value: $0)] } ?? [])
         return c.url!
     }
 

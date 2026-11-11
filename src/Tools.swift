@@ -4,7 +4,6 @@ struct Holding: Equatable {
     var tool: Tool
     var provider: Provider
     var location: String?
-    var home: String?
     var family: Family
     var dead: String?
     var account: String?
@@ -171,10 +170,6 @@ enum Hermes {
         return out
     }
 
-    static func url(_ home: String) -> URL {
-        home == "default" ? Paths.hermesRoot : Paths.hermesRoot.appendingPathComponent("profiles/\(home)")
-    }
-
     static func read(minted: [String: Minted]) -> [Holding] {
         var out: [Holding] = []
         for h in homes() {
@@ -182,9 +177,6 @@ enum Hermes {
                 let m = minted[Secret.fingerprint(tok)]
                 out.append(Holding(tool: .hermes, provider: .claude, location: h.name,
                                    family: Family(provider: .claude, access: tok, expiresAt: m?.expiresAt), account: m?.account))
-            }
-            if let o = Files.object(try? Data(contentsOf: h.url.appendingPathComponent("auth.json"))), let c = codex(o, home: h.name) {
-                out.append(c)
             }
         }
         return out
@@ -237,70 +229,6 @@ enum Hermes {
             throw error
         }
         return old
-    }
-
-    static func codex(_ o: [String: Any], home: String) -> Holding? {
-        guard let st = (o["providers"] as? [String: Any])?["openai-codex"] as? [String: Any],
-              let t = st["tokens"] as? [String: Any], let at = t["access_token"] as? String, !at.isEmpty else { return nil }
-        var f = Family.codex(access: at, refresh: t["refresh_token"] as? String, idToken: t["id_token"] as? String,
-                             accountId: t["account_id"] as? String)
-        var last = (st["last_refresh"] as? String).flatMap(JSON.parseDate)
-        let pool = ((o["credential_pool"] as? [String: Any])?["openai-codex"] as? [[String: Any]]) ?? []
-        if let e = pool.first(where: { $0["source"] as? String == "device_code" }),
-           let pa = e["access_token"] as? String, pa != at,
-           let pl = (e["last_refresh"] as? String).flatMap(JSON.parseDate), pl > (last ?? .distantPast) {
-            f = Family.codex(access: pa, refresh: e["refresh_token"] as? String, idToken: f.idToken, accountId: f.accountId)
-            last = pl
-        }
-        var dead: String?
-        if let err = st["last_auth_error"] as? [String: Any], err["relogin_required"] as? Bool == true,
-           ((err["at"] as? String).flatMap(JSON.parseDate) ?? .distantFuture) > (last ?? .distantPast) {
-            dead = (err["code"] as? String).map { $0.replacingOccurrences(of: "_", with: " ") } ?? "needs a new sign-in"
-        }
-        return Holding(tool: .hermes, provider: .codex, location: home, home: home, family: f, dead: dead, account: f.key)
-    }
-
-    static func codexHomes() -> [String] {
-        homes().filter { h in
-            let o = Files.object(try? Data(contentsOf: h.url.appendingPathComponent("auth.json")))
-            return ((o?["providers"] as? [String: Any])?["openai-codex"] as? [String: Any])?["tokens"] != nil
-        }.map(\.name)
-    }
-
-    static func installCodex(_ f: Family, home: String) throws -> [Holding] {
-        let dir = url(home)
-        let file = dir.appendingPathComponent("auth.json")
-        let lock = try FileLock(dir.appendingPathComponent("auth.lock"), timeout: 10)
-        defer { lock.release() }
-        let data = try Data(contentsOf: file)
-        guard var o = Files.object(data) else { throw ProviderError.other("\(file.path) isn't JSON") }
-        let old = codex(o, home: home)
-        try Backup.save("hermes-\(home)-auth.json", data)
-
-        let now = Stamp.iso(Date())
-        var providers = o["providers"] as? [String: Any] ?? [:]
-        var st = providers["openai-codex"] as? [String: Any] ?? [:]
-        st["tokens"] = CodexCLI.tokens(f)
-        st["last_refresh"] = now
-        st["auth_mode"] = "chatgpt"
-        st["last_auth_error"] = nil
-        providers["openai-codex"] = st
-        o["providers"] = providers
-        if var pool = o["credential_pool"] as? [String: Any], var list = pool["openai-codex"] as? [[String: Any]] {
-            for i in list.indices where list[i]["source"] as? String == "device_code" {
-                list[i]["access_token"] = f.access
-                list[i]["refresh_token"] = f.refresh ?? ""
-                list[i]["last_refresh"] = now
-                for k in ["last_status", "last_status_at", "last_error_code", "last_error_reason", "last_error_message", "last_error_reset_at"] {
-                    list[i][k] = NSNull()
-                }
-            }
-            pool["openai-codex"] = list
-            o["credential_pool"] = pool
-        }
-        o["updated_at"] = now
-        try Files.write(try Files.json(o), to: file)
-        return old.map { [$0] } ?? []
     }
 }
 
@@ -393,23 +321,16 @@ enum Tools {
         switch t {
         case .claudeCode: return ClaudeCode.read().map { [$0] } ?? []
         case .codex: return CodexCLI.read().map { [$0] } ?? []
-        case .hermes: return Hermes.read(minted: minted).filter { $0.provider == p }
+        case .hermes: return Hermes.read(minted: minted)
         case .omp: return OMP.read().filter { $0.provider == p }
         }
     }
 
-    static func places(_ t: Tool, _ p: Provider) -> [String?] {
-        t == .hermes && p == .codex ? Hermes.codexHomes() : [nil]
-    }
-
-    static func install(_ t: Tool, home: String?, _ f: Family, profile: [String: Any]?, minted: [String: Minted]) throws -> [Holding] {
+    static func install(_ t: Tool, _ f: Family, profile: [String: Any]?, minted: [String: Minted]) throws -> [Holding] {
         switch t {
         case .claudeCode: return try ClaudeCode.install(f, profile: profile ?? [:])
         case .codex: return try CodexCLI.install(f)
-        case .hermes:
-            if f.provider == .claude { return try Hermes.installToken(f, minted: minted) }
-            guard let home else { throw ProviderError.other("no Hermes home") }
-            return try Hermes.installCodex(f, home: home)
+        case .hermes: return try Hermes.installToken(f, minted: minted)
         case .omp: return try OMP.install(f)
         }
     }

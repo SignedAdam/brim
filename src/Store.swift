@@ -117,7 +117,7 @@ final class Store: ObservableObject {
 
     func borrowed(_ a: Account, now: Date) -> Family? {
         guard a.source == .tool, let k = a.key else { return nil }
-        let live = holdings.filter { $0.account == k && $0.dead == nil && !($0.tool == .hermes && $0.provider == .claude) }.map(\.family)
+        let live = holdings.filter { $0.account == k && $0.dead == nil && $0.tool != .hermes }.map(\.family)
             + parked.filter { $0.account == k && $0.error == nil && $0.tool != .hermes }.map(\.family)
         return live.filter { !$0.expired(now) }.max { ($0.expiresAt ?? .distantPast) < ($1.expiresAt ?? .distantPast) }
     }
