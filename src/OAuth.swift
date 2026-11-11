@@ -107,9 +107,9 @@ enum SignIn {
                        accessToken: keyVar == nil ? key : nil)
     }
 
-    static func run(_ provider: Provider, label: String?) async throws -> Account {
+    static func run(_ provider: Provider, label: String?, open: Bool = true) async throws -> Account {
         guard provider != .openrouter else { throw ProviderError.other("OpenRouter uses an API key") }
-        let f = try await family(provider)
+        let f = try await family(provider, open: open)
         var a = Account(id: UUID().uuidString, provider: provider, source: .signIn, label: label ?? provider.name,
                         email: f.email, plan: f.subscriptionType, remoteId: f.accountId,
                         accessToken: f.access, refreshToken: f.refresh, expiresAt: f.expiresAt)
@@ -120,14 +120,19 @@ enum SignIn {
         return a
     }
 
-    static func family(_ provider: Provider, longLived: Bool = false) async throws -> Family {
+    static func family(_ provider: Provider, longLived: Bool = false, open: Bool = true) async throws -> Family {
+        func present(_ url: URL) {
+            if open { NSWorkspace.shared.open(url); return }
+            print(url.absoluteString)
+            fflush(stdout)
+        }
         let pkce = PKCE()
         switch provider {
         case .openrouter:
             throw ProviderError.other("OpenRouter uses an API key")
         case .claude:
             let lb = try Loopback()
-            NSWorkspace.shared.open(Claude.authorizeURL(port: lb.port, pkce: pkce, scopes: longLived ? ["user:inference"] : Claude.scopes))
+            present(Claude.authorizeURL(port: lb.port, pkce: pkce, scopes: longLived ? ["user:inference"] : Claude.scopes))
             let q = try await lb.wait(path: "/callback")
             guard let code = q["code"], q["state"] == pkce.state else { throw ProviderError.other("sign-in cancelled") }
             let t = try await Claude.exchange(code: code, port: lb.port, pkce: pkce, expiresIn: longLived ? Claude.longLivedSeconds : nil)
@@ -141,7 +146,7 @@ enum SignIn {
                           scopes: (t["scope"] as? String)?.split(separator: " ").map(String.init))
         case .codex:
             let lb = try Loopback(port: Codex.port)
-            NSWorkspace.shared.open(Codex.authorizeURL(pkce: pkce))
+            present(Codex.authorizeURL(pkce: pkce))
             let q = try await lb.wait(path: "/auth/callback")
             guard let code = q["code"], q["state"] == pkce.state else { throw ProviderError.other("sign-in cancelled") }
             let t = try await Codex.exchange(code: code, pkce: pkce)

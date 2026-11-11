@@ -250,26 +250,47 @@ struct Minis: View {
     @ObservedObject var store: Store
 
     var body: some View {
-        let list = Array(store.visible.prefix(6))
-        let h: CGFloat = list.count > 4 ? 1.5 : 2
-        let gap: CGFloat = list.count > 4 ? 2 : 2.5
-        VStack(alignment: .leading, spacing: gap) {
-            ForEach(list) { a in
-                let u = store.usage[a.id]
-                let pct = min(u?.peak ?? 0, 100)
-                ZStack(alignment: .leading) {
-                    Capsule().fill(Theme.track)
-                    Capsule().fill(u?.needsAuth == true ? Theme.faint : pct >= 85 ? Theme.level(pct) : Theme.brand(a.provider))
-                        .frame(width: u == nil ? 0 : max(h, 26 * pct / 100))
+        let cols = columns
+        let shown = cols.flatMap { $0 }
+        let tall = (cols.map(\.count).max() ?? 0) > 4
+        let h: CGFloat = tall ? 1.5 : 2
+        let gap: CGFloat = tall ? 2 : 2.5
+        let w: CGFloat = cols.count > 1 ? 24 : 26
+        HStack(alignment: .top, spacing: 4) {
+            ForEach(cols.indices, id: \.self) { i in
+                VStack(alignment: .leading, spacing: gap) {
+                    ForEach(cols[i]) { a in
+                        let u = store.usage[a.id]
+                        let pct = min(u?.peak ?? 0, 100)
+                        ZStack(alignment: .leading) {
+                            Capsule().fill(Theme.track)
+                            Capsule().fill(u?.needsAuth == true ? Theme.faint : pct >= 85 ? Theme.level(pct) : Theme.brand(a.provider))
+                                .frame(width: u == nil ? 0 : max(h, w * pct / 100))
+                        }
+                        .frame(width: w, height: h)
+                    }
                 }
-                .frame(width: 26, height: h)
             }
-            if list.isEmpty {
+            if shown.isEmpty {
                 Capsule().fill(Theme.track).frame(width: 26, height: 2)
             }
         }
         .animation(.spring(response: 0.5, dampingFraction: 0.8), value: store.usage)
-        .help(list.map { "\($0.label) \(Int(store.usage[$0.id]?.peak ?? 0))%" }.joined(separator: " · "))
+        .help(shown.map { "\($0.label) \(Int(store.usage[$0.id]?.peak ?? 0))%" }.joined(separator: " · "))
+    }
+
+    private var columns: [[Account]] {
+        var list = store.visible
+        if list.count > 6 && store.settings.hideUsedUp {
+            list = list.filter { (store.usage[$0.id]?.peak ?? 0) < 100 }
+        }
+        guard list.count > 6 && store.settings.pairLines else { return list.isEmpty ? [] : [Array(list.prefix(6))] }
+        var left = list.filter { $0.provider == .claude }
+        var right = list.filter { $0.provider == .codex }
+        for a in list where a.provider == .openrouter {
+            if left.count <= right.count { left.append(a) } else { right.append(a) }
+        }
+        return [left, right].filter { !$0.isEmpty }.map { Array($0.prefix(6)) }
     }
 }
 
@@ -369,7 +390,7 @@ struct Row: View {
     private var subtitle: String {
         var parts: [String] = []
         if account.provider == .openrouter { parts.append("Credits") }
-        if let p = Fmt.plan(account.plan ?? usage?.plan) { parts.append(p) }
+        if let p = Fmt.plan(account.plan ?? usage?.plan, account.provider) { parts.append(p) }
         if let m = usage?.windows.first(where: { $0.kind == .model && $0.percent >= 40 }) { parts.append("\(m.label) \(Int(m.percent))%") }
         if parts.isEmpty { parts.append(account.provider.name) }
         if usage?.error != nil, usage?.needsAuth != true, !(usage?.windows.isEmpty ?? true) { parts.append("stale") }

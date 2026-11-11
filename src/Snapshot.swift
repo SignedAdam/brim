@@ -68,9 +68,9 @@ enum Snapshot {
         let rows: [(String, Provider, String, Double, TimeInterval, Double, TimeInterval, Int?)] = [
             ("Personal", .claude, "default_claude_max_20x", 17, 2 * 3600 + 14 * 60, 21, 1.8 * 86400, nil),
             ("Studio", .claude, "default_claude_max_5x", 64, 3 * 3600 + 40 * 60, 48, 4.2 * 86400, nil),
-            ("ChatGPT", .codex, "plus", 7, 8 * 60, 34, 5.3 * 86400, 2),
+            ("ChatGPT", .codex, "promax", 7, 8 * 60, 34, 5.3 * 86400, 2),
             ("Auernet", .claude, "claude_team", 88, 52 * 60, 71, 2.6 * 86400, nil),
-            ("Auernet GPT", .codex, "business", 100, 37 * 60, 55, 3.1 * 86400, nil),
+            ("Auernet GPT", .codex, "team", 100, 37 * 60, 55, 3.1 * 86400, nil),
         ]
         for (i, r) in rows.enumerated() {
             let id = "sample-\(i)"

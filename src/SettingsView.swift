@@ -10,7 +10,7 @@ struct SettingsView: View {
     var body: some View {
         Form {
             Section("Accounts") {
-                ForEach(store.visible) { a in
+                ForEach(store.accounts) { a in
                     AccountRow(store: store, account: a)
                 }
                 HStack {
@@ -18,17 +18,17 @@ struct SettingsView: View {
                     Button("Add ChatGPT Account…") { onAdd(.codex) }
                     Button("Add OpenRouter Key…") { onAdd(.openrouter) }
                     Spacer()
-                    let hidden = store.accounts.filter(\.isHidden)
-                    if !hidden.isEmpty {
-                        Menu("Restore") {
-                            ForEach(hidden) { a in
-                                let name = a.source == .apiKey ? "OpenRouter key (\(a.keyVar ?? "env"))" : "\(a.label)\(a.email.map { " · \($0)" } ?? "")"
-                                Button(name) { store.restore(a.id) }
-                            }
-                        }
-                        .fixedSize()
-                    }
                 }
+            }
+
+            Section {
+                Toggle("Show Claude and Codex side by side", isOn: bind(\.pairLines))
+                Toggle("Hide accounts that are used up", isOn: bind(\.hideUsedUp))
+            } header: {
+                Text("Closed notch")
+            } footer: {
+                Text("Both apply only when the closed notch has more than 6 accounts to show. The open notch always lists every checked account.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
 
             Section("Alerts") {
@@ -93,26 +93,35 @@ struct AccountRow: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            Mark(provider: account.provider, tint: .primary).frame(width: 14, height: 14)
-            VStack(alignment: .leading, spacing: 1) {
-                TextField("", text: $label, prompt: Text("Name"))
-                    .labelsHidden().textFieldStyle(.plain).fontWeight(.medium)
-                    .onSubmit(commit)
-                Text(detail).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+            Toggle("Show \(account.label)", isOn: Binding(get: { !account.isHidden },
+                                                          set: { $0 ? store.restore(account.id) : store.hide(account.id) }))
+                .toggleStyle(.checkbox).labelsHidden()
+                .help(account.isHidden ? "Hidden from the notch. Check to show \(account.label) again." : "Shown in the notch. Uncheck to hide \(account.label) until checked again.")
+            Group {
+                Mark(provider: account.provider, tint: .primary).frame(width: 14, height: 14)
+                VStack(alignment: .leading, spacing: 1) {
+                    TextField("", text: $label, prompt: Text("Name"))
+                        .labelsHidden().textFieldStyle(.plain).fontWeight(.medium)
+                        .onSubmit(commit)
+                    Text(detail).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                }
             }
+            .opacity(account.isHidden ? 0.5 : 1)
             Spacer()
-            Button { store.remove(account.id) } label: {
-                Image(systemName: "minus.circle.fill").foregroundStyle(.secondary)
+            if !(account.isHidden && Store.discovered(account)) {
+                Button { store.remove(account.id) } label: {
+                    Image(systemName: "minus.circle.fill").foregroundStyle(.secondary)
+                }
+                .buttonStyle(.borderless)
+                .help("Remove")
             }
-            .buttonStyle(.borderless)
-            .help("Remove")
         }
         .onAppear { label = account.label }
         .onChange(of: account.label) { _, new in label = new }
     }
 
     private var detail: String {
-        [account.email, Fmt.plan(account.plan ?? store.usage[account.id]?.plan)].compactMap { $0 }.joined(separator: " · ")
+        [account.email, Fmt.plan(account.plan ?? store.usage[account.id]?.plan, account.provider)].compactMap { $0 }.joined(separator: " · ")
     }
 
     private func commit() {

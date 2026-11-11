@@ -15,8 +15,9 @@ enum CLI {
           brim switch <account> claude-code|codex|hermes|omp
                                     sign that tool in as <account>; the previous login is
                                     parked, so switching back needs no new sign-in
-          brim add claude|codex [--label NAME]
-                                    sign in to another account in the browser
+          brim add claude|codex [--label NAME] [--no-open]
+                                    sign in to another account in the browser; --no-open
+                                    prints the sign-in link instead of opening it
           brim add openrouter [--env VAR] [--label NAME]
                                     an OpenRouter key: from stdin, or tracked by env var name
           brim rename <account> <label>
@@ -103,7 +104,7 @@ enum CLI {
                 let u = usage[a.id]
                 var o: [String: Any] = ["id": a.id, "label": a.label, "provider": a.provider.rawValue, "source": a.source.rawValue]
                 if let e = a.email { o["email"] = e }
-                if let p = Fmt.plan(a.plan ?? u?.plan) { o["plan"] = p }
+                if let p = Fmt.plan(a.plan ?? u?.plan, a.provider) { o["plan"] = p }
                 if let u {
                     o["fetched_at"] = ISO8601DateFormatter().string(from: u.fetchedAt)
                     if let e = u.error { o["error"] = e }
@@ -213,7 +214,15 @@ enum CLI {
             print("Opening your browser to sign \(tool.name) in as \(a.label)…")
         }
         do {
-            let line = try await_ { try await Switcher.run(tool, to: a) }
+            let line = try await_ {
+                try await Switcher.run(tool, to: a) {
+                    var all = accounts()
+                    guard let j = all.firstIndex(where: { $0.id == a.id }) else { return }
+                    all[j].source = .tool
+                    (all[j].accessToken, all[j].refreshToken, all[j].expiresAt) = (nil, nil, nil)
+                    JSON.save(all, Paths.accounts)
+                }
+            }
             print(line)
             if let p = tool.pickup { print(p) }
             notify()
@@ -224,7 +233,7 @@ enum CLI {
     }
 
     static func add(_ args: [String]) {
-        guard let p = args.first.flatMap(Provider.init(rawValue:)) else { print("usage: brim add claude|codex|openrouter [--label NAME]"); exit(2) }
+        guard let p = args.first.flatMap(Provider.init(rawValue:)) else { print("usage: brim add claude|codex|openrouter [--label NAME] [--no-open]"); exit(2) }
         let label = args.firstIndex(of: "--label").flatMap { args.indices.contains($0 + 1) ? args[$0 + 1] : nil }
         if p == .openrouter {
             let envVar = args.firstIndex(of: "--env").flatMap { args.indices.contains($0 + 1) ? args[$0 + 1] : nil }
@@ -241,9 +250,11 @@ enum CLI {
             } catch { print("key rejected: \(error)"); exit(1) }
             return
         }
-        print("Opening your browser to sign in to \(p.name)…")
+        let open = !args.contains("--no-open")
+        print(open ? "Opening your browser to sign in to \(p.name)…" : "Open this to sign in to \(p.name):")
+        fflush(stdout)
         do {
-            let a = try await_ { try await SignIn.run(p, label: label) }
+            let a = try await_ { try await SignIn.run(p, label: label, open: open) }
             save(a)
         } catch {
             print("sign-in failed: \(error)"); exit(1)

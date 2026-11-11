@@ -234,13 +234,20 @@ final class Store: ObservableObject {
         }
         Task {
             do {
-                let line = try await Switcher.run(tool, to: a)
+                let line = try await Switcher.run(tool, to: a) { self.handOver(a.id) }
                 show(Flash(text: line + (tool.pickup.map { " · \($0)" } ?? ""), provider: a.provider, tone: .accent))
             } catch {
                 show(Flash(text: "\(tool.name): \(error)", provider: a.provider, tone: .warn), seconds: 10)
             }
             switching.remove(k)
             await scan()
+        }
+    }
+
+    private func handOver(_ id: String) {
+        update(id) { a in
+            a.source = .tool
+            (a.accessToken, a.refreshToken, a.expiresAt) = (nil, nil, nil)
         }
     }
 
@@ -333,6 +340,12 @@ final class Store: ObservableObject {
     func restore(_ id: String) {
         update(id) { $0.hidden = false }
         Task { await refresh() }
+    }
+
+    func hide(_ id: String) {
+        update(id) { $0.hidden = true }
+        usage[id] = nil
+        JSON.save(Array(usage.values), Paths.usage)
     }
 
     func shift(_ id: String, by d: Int) {

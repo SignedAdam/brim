@@ -1,6 +1,6 @@
 import Foundation
 
-let VERSION = "0.2.0"
+let VERSION = "0.3.0"
 
 enum Provider: String, Codable, CaseIterable {
     case claude, codex, openrouter
@@ -149,6 +149,8 @@ struct Settings: Codable, Equatable {
     var display: String = "auto"
     var announcements: Bool = true
     var lowBalance: Double = 5
+    var pairLines: Bool = true
+    var hideUsedUp: Bool = false
 
     init() {}
 
@@ -165,6 +167,8 @@ struct Settings: Codable, Equatable {
         display = (try? c.decode(String.self, forKey: .display)) ?? z.display
         announcements = (try? c.decode(Bool.self, forKey: .announcements)) ?? z.announcements
         lowBalance = (try? c.decode(Double.self, forKey: .lowBalance)) ?? z.lowBalance
+        pairLines = (try? c.decode(Bool.self, forKey: .pairLines)) ?? z.pairLines
+        hideUsedUp = (try? c.decode(Bool.self, forKey: .hideUsedUp)) ?? z.hideUsedUp
     }
 }
 
@@ -251,12 +255,23 @@ enum Fmt {
         return String(format: "$%.2f", v)
     }
 
-    static func plan(_ raw: String?) -> String? {
+    static let codexPlans = [
+        "free": "Free", "go": "Go", "plus": "Plus",
+        "prolite": "Pro 100", "pro": "Pro 200", "promax": "Pro 500",
+        "team": "Business", "self_serve_business_usage_based": "Business",
+        "self_serve_business_prolite": "Business Premium", "business": "Enterprise",
+        "enterprise": "Enterprise", "hc": "Enterprise", "ent26": "Enterprise",
+        "enterprise_cbp_usage_based": "Enterprise", "enterprise_cbp_automation": "Enterprise (Automation)",
+        "edu": "Edu", "education": "Edu", "edu_plus": "Edu Plus", "edu_pro": "Edu Pro",
+        "sci": "Academic Researchers", "sci_plus": "Academic Researchers Plus",
+    ]
+
+    static func plan(_ raw: String?, _ provider: Provider) -> String? {
         guard let raw, !raw.isEmpty else { return nil }
         let r = raw.lowercased()
-        if r.contains("max_20x") || r.contains("max20") { return "Max 20×" }
-        if r.contains("max_5x") || r.contains("max5") { return "Max 5×" }
-        if r == "max" { return "Max" }
+        if provider == .codex, let name = codexPlans[r] { return name }
+        if r.contains("ultra") || r.contains("max_20x") || r.contains("max20") { return "Ultra" }
+        if r.contains("max_5x") || r.contains("max5") || r == "max" { return "Max" }
         if r.contains("enterprise") { return "Enterprise" }
         if r.contains("team") { return "Team" }
         if r.contains("pro") { return "Pro" }

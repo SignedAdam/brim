@@ -8,6 +8,8 @@ Closed, it's a sliver either side of the camera: one hairline per account on the
 
 ![Brim, closed](docs/closed.png)
 
+Past 6 accounts, Settings can split the closed notch into a Claude column and a Codex column and leave out used-up accounts; a checkbox per account hides it everywhere until you check it again.
+
 Hover the notch and it opens: every account's 5-hour session and weekly limit, how far through each window you are (the tick), and a countdown to each reset. On a screen without a notch it becomes a small pill in the menu bar.
 
 - **Claude** and **ChatGPT / Codex**, as many accounts of each as you like. Every account Claude Code, Codex, Hermes Agent or OMP is signed in to on this Mac is picked up automatically; add others with a browser sign-in.

@@ -3,7 +3,7 @@ import Foundation
 enum Switcher {
     static let installMargin: TimeInterval = 15 * 60
 
-    static func run(_ tool: Tool, to a: Account) async throws -> String {
+    static func run(_ tool: Tool, to a: Account, onHandOver: () async -> Void = {}) async throws -> String {
         let p = a.provider
         guard let key = a.key else { throw ProviderError.other("\(a.label) has no account id yet") }
         guard tool.providers.contains(p) else { throw ProviderError.other("\(tool.name) doesn't take \(p.name) accounts") }
@@ -11,6 +11,7 @@ enum Switcher {
         let longLived = tool == .hermes && p == .claude
         var places = Tools.places(tool, p)
         if places.isEmpty { places = ["default"] }
+        var own = longLived ? nil : ownFamily(a)
 
         for home in places {
             let v = try Vault.read()
@@ -19,11 +20,17 @@ enum Switcher {
 
             var fresh: Family?
             if !usable(v.slot(key, tool, home), Date()) {
-                let f = try await SignIn.family(p, longLived: longLived)
-                guard f.key == key else {
-                    throw ProviderError.other("the browser signed in as \(f.email ?? "another account"), not \(a.label)")
+                if let o = own {
+                    fresh = try await refresh(o)
+                    own = nil
+                    await onHandOver()
+                } else {
+                    let f = try await SignIn.family(p, longLived: longLived)
+                    guard f.key == key else {
+                        throw ProviderError.other("the browser signed in as \(f.email ?? "another account"), not \(a.label)")
+                    }
+                    fresh = f
                 }
-                fresh = f
             }
 
             try await Vault.locked { v in
@@ -97,15 +104,26 @@ enum Switcher {
         return n
     }
 
+    static func ownFamily(_ a: Account) -> Family? {
+        guard a.source == .signIn, let access = a.accessToken, let refresh = a.refreshToken else { return nil }
+        switch a.provider {
+        case .codex: return Family.codex(access: access, refresh: refresh, idToken: nil, accountId: a.remoteId)
+        case .claude: return Family(provider: .claude, access: access, refresh: refresh, expiresAt: a.expiresAt, accountId: a.remoteId, email: a.email)
+        case .openrouter: return nil
+        }
+    }
+
     static func needsSignIn(_ tool: Tool, _ a: Account, now: Date = Date()) -> Bool {
         guard let key = a.key, tool.providers.contains(a.provider) else { return false }
         let v = Vault.load()
         let places = Tools.places(tool, a.provider)
-        return (places.isEmpty ? ["default"] : places).contains { home in
+        let missing = (places.isEmpty ? ["default"] : places).filter { home in
             let current = held(tool, a.provider, home, minted: v.minted)
             let there = !current.isEmpty && current.allSatisfy { $0.account == key && $0.dead == nil }
             return !there && !usable(v.slot(key, tool, home), now)
         }
+        let longLived = tool == .hermes && a.provider == .claude
+        return missing.count > (!longLived && ownFamily(a) != nil ? 1 : 0)
     }
 
     static func held(_ tool: Tool, _ p: Provider, _ home: String?, minted: [String: Minted]) -> [Holding] {
