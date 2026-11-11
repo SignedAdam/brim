@@ -1,6 +1,6 @@
 import Foundation
 
-let VERSION = "0.3.0"
+let VERSION = "0.4.0"
 
 enum Provider: String, Codable, CaseIterable {
     case claude, codex, openrouter

@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.0
 
 - Signing a ChatGPT account in from the browser gets one login for Codex and one for OMP in the same tab, so later switches to that account never open the browser. OpenAI asks for a Continue click for the second login, or for the password or email code again when the browser isn't signed in to ChatGPT as that account.
 - Hermes takes Claude accounts only.
