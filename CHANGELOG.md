@@ -5,6 +5,7 @@
 - Signing a ChatGPT account in from the browser gets one login for Codex and one for OMP in the same tab, so later switches to that account never open the browser. OpenAI asks for a Continue click for the second login, or for the password or email code again when the browser isn't signed in to ChatGPT as that account.
 - Hermes takes Claude accounts only.
 - `brim switch <account> <tool> --no-open` prints the sign-in link instead of opening the browser.
+- AGENTS.md: how an agent reads limits, switches tools and finishes a sign-in for the user.
 
 ## 0.3.0
 

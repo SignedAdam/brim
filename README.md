@@ -48,6 +48,8 @@ brim alerts                       recent alerts, JSON lines
 brim quit
 ```
 
+Agents: see [AGENTS.md](AGENTS.md) for reading limits, switching, and finishing a sign-in for the user.
+
 Everything lives in `~/.brim` (owner-only).
 
 ## Switching
