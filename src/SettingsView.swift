@@ -127,7 +127,7 @@ struct AccountRow: View {
     private func commit() {
         let l = label.trimmingCharacters(in: .whitespaces)
         guard !l.isEmpty else { label = account.label; return }
-        store.update(account.id) { $0.label = l }
+        store.rename(account.id, to: l)
     }
 }
 

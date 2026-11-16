@@ -4,6 +4,16 @@ enum Switcher {
     static let installMargin: TimeInterval = 15 * 60
 
     static func run(_ tool: Tool, to a: Account, open: Bool = true, onHandOver: () async -> Void = {}) async throws -> String {
+        do {
+            try await perform(tool, to: a, open: open, onHandOver: onHandOver)
+        } catch {
+            Events.record(.switched, "\(tool.name) → \(a.label)", failure: error, account: a, tool: tool)
+            throw error
+        }
+        return "\(tool.name) → \(a.label)"
+    }
+
+    private static func perform(_ tool: Tool, to a: Account, open: Bool, onHandOver: () async -> Void) async throws {
         let p = a.provider
         guard let key = a.key else { throw ProviderError.other("\(a.label) has no account id yet") }
         guard tool.providers.contains(p) else { throw ProviderError.other("\(tool.name) doesn't take \(p.name) accounts") }
@@ -11,7 +21,10 @@ enum Switcher {
         let longLived = tool == .hermes
         let v = try Vault.read()
         let current = Tools.read(tool, p, minted: v.minted)
-        if !current.isEmpty, current.allSatisfy({ $0.account == key && $0.dead == nil }) { return "\(tool.name) → \(a.label)" }
+        if !current.isEmpty, current.allSatisfy({ $0.account == key && $0.dead == nil }) { return }
+        let was = current.first { $0.dead == nil }.map { h in
+            Accounts.load().first { $0.key != nil && $0.key == h.account }?.label ?? h.family.email ?? "an unknown account"
+        }
 
         var fresh: Family?
         if !usable(v.slot(key, tool), Date()) {
@@ -77,12 +90,10 @@ enum Switcher {
             }
             if longLived { v.minted[Secret.fingerprint(f.access)] = Minted(account: key, expiresAt: f.expiresAt) }
             do { try v.save() } catch {
-                log("switch: \(tool.name) now holds \(a.label), but the vault couldn't keep the previous login: \(error)")
                 throw ProviderError.other("\(tool.name) switched, but its previous login couldn't be parked (\(error))")
             }
-            log("switch: \(tool.name) -> \(a.label)")
+            Events.record(.switched, "\(tool.name) → \(a.label)", account: a, tool: tool, from: was)
         }
-        return "\(tool.name) → \(a.label)"
     }
 
     static func missing(_ key: String, _ v: Vault, except: Tool?) -> [Tool] {
@@ -159,7 +170,8 @@ enum Switcher {
                         v.slots[i].refreshedAt = now
                     } catch ProviderError.auth(let why) {
                         v.slots[i].error = why
-                        log("vault: \(s.account) for \(s.tool.name) can't be refreshed: \(why)")
+                        Events.record(.vault, "parked \(s.tool.name) login can't be refreshed", error: why,
+                                      account: Accounts.load().first { $0.key == s.account }, tool: s.tool)
                     } catch {
                         continue
                     }
@@ -167,7 +179,7 @@ enum Switcher {
                 }
             }
         } catch {
-            log("vault: keep-fresh skipped: \(error)")
+            Events.record(.vault, "keep-fresh skipped", failure: error)
         }
     }
 }

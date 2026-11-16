@@ -71,11 +71,24 @@ enum Claude {
     static let refreshScopes = ["user:profile", "user:inference", "user:sessions:claude_code", "user:mcp_servers",
                                 "user:file_upload", "user:plugins"]
 
+    static let userAgent: String = {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let bin = ["\(home)/.local/bin/claude", "/opt/homebrew/bin/claude", "/usr/local/bin/claude"]
+            .first { FileManager.default.isExecutableFile(atPath: $0) }
+        let v = bin.flatMap { Shell.run($0, ["--version"]) }?.split(separator: " ").first.map(String.init)
+        return "claude-cli/\(v.flatMap { $0.first?.isNumber == true ? $0 : nil } ?? "2.1.321") (external, cli)"
+    }()
+
     static func request(_ path: String, _ token: String) -> URLRequest {
-        var r = URLRequest(url: URL(string: "https://api.anthropic.com/api/oauth/\(path)")!)
+        authorized(URL(string: "https://api.anthropic.com/api/oauth/\(path)")!, token)
+    }
+
+    static func authorized(_ url: URL, _ token: String) -> URLRequest {
+        var r = URLRequest(url: url)
         r.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         r.setValue("oauth-2025-04-20", forHTTPHeaderField: "anthropic-beta")
         r.setValue("application/json", forHTTPHeaderField: "Accept")
+        r.setValue(userAgent, forHTTPHeaderField: "User-Agent")
         return r
     }
 
@@ -88,7 +101,46 @@ enum Claude {
     }
 
     static func usage(_ token: String) async throws -> [String: Any] {
-        try await HTTP.json(request("usage", token))
+        try await HTTP.json(request("usage?cedar_ember=1", token))
+    }
+
+    static func resets(_ o: [String: Any]) -> (count: Int, next: ResetGrant?)? {
+        guard let ce = o["cedar_ember"] as? [String: Any], ce["eligible"] as? Bool == true else { return nil }
+        let usable = (ce["grants"] as? [[String: Any]] ?? []).filter { $0["usable_now"] as? Bool == true && $0["paused"] as? Bool != true }
+        let count = usable.reduce(0) { $0 + (($1["resets_left"] as? NSNumber)?.intValue ?? 0) }
+        guard let id = ce["next_grant_id"] as? String, let g = usable.first(where: { $0["id"] as? String == id }) else { return (0, nil) }
+        var clears: [UsageWindow.Kind] = []
+        for c in g["clears"] as? [String] ?? [] {
+            let k: UsageWindow.Kind = c == "five_hour" ? .session : c == "seven_day" ? .weekly : .model
+            if !clears.contains(k) { clears.append(k) }
+        }
+        return (count, ResetGrant(label: g["label"] as? String ?? id, clears: clears))
+    }
+
+    static func useReset(_ token: String) async throws {
+        guard let grant = ((try await usage(token))["cedar_ember"] as? [String: Any])?["next_grant_id"] as? String else {
+            throw ProviderError.other("Anthropic has no reset this account can use now")
+        }
+        guard let org = ((try await HTTP.json(request("profile", token)))["organization"] as? [String: Any])?["uuid"] as? String else {
+            throw ProviderError.other("this login has no Claude organization")
+        }
+        var r = authorized(URL(string: "https://api.anthropic.com/api/organizations/\(org)/reset_rate_limits")!, token)
+        r.httpMethod = "POST"
+        r.timeoutInterval = 25
+        r.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        r.httpBody = try JSONSerialization.data(withJSONObject: ["program": "cedar_ember", "grant_id": grant,
+                                                                 "request_id": UUID().uuidString.lowercased()])
+        let o = try await HTTP.json(r)
+        let result = o["result"] as? String
+        switch result {
+        case "reset", "already_used": return
+        case "not_limited": throw ProviderError.other("Anthropic says there's nothing to reset yet")
+        case "cooldown":
+            let until = (o["cooldown_until"] as? String).flatMap(JSON.parseDate).map { ", try again \(Fmt.when($0))" } ?? ""
+            throw ProviderError.other("Anthropic is cooling down resets\(until)")
+        case "ineligible": throw ProviderError.other("Anthropic says this account can't use resets any more")
+        default: throw ProviderError.other("Anthropic didn't reset (\(o["reason"] as? String ?? result ?? "no answer"))")
+        }
     }
 
     static func parse(_ o: [String: Any]) -> [UsageWindow] {
@@ -294,16 +346,14 @@ enum Fetcher {
         var u = Usage(accountId: a.id, fetchedAt: now)
         do {
             switch (a.provider, a.source) {
-            case (.claude, .tool):
-                guard let f = borrowed else { throw ProviderError.auth("no tool on this Mac holds it") }
-                u.windows = Claude.parse(try await Claude.usage(f.access))
-                u.plan = f.rateLimitTier ?? f.subscriptionType
             case (.claude, _):
-                try await refreshIfNeeded(&acct, now: now)
-                u.windows = Claude.parse(try await Claude.usage(acct.accessToken ?? ""))
-                u.plan = acct.plan
+                let o = try await Claude.usage(try await login(&acct, borrowed: borrowed, now: now).token)
+                u.windows = Claude.parse(o)
+                let r = Claude.resets(o)
+                (u.resetCredits, u.resetNext) = (r?.count, r?.next)
+                u.plan = a.source == .tool ? borrowed?.rateLimitTier ?? borrowed?.subscriptionType : acct.plan
             case (.codex, _):
-                let (token, id) = try await codexAuth(&acct, borrowed: borrowed, now: now)
+                let (token, id) = try await login(&acct, borrowed: borrowed, now: now)
                 let r = Codex.parse(try await Codex.usage(token, accountId: id))
                 (u.windows, u.plan, u.resetCredits) = (r.windows, r.plan, r.credits)
             case (.openrouter, _):
@@ -322,12 +372,16 @@ enum Fetcher {
 
     static func useReset(_ a: Account, borrowed: Family?, now: Date = Date()) async throws -> Account {
         var acct = a
-        let (token, id) = try await codexAuth(&acct, borrowed: borrowed, now: now)
-        try await Codex.useReset(token, accountId: id)
+        let (token, id) = try await login(&acct, borrowed: borrowed, now: now)
+        switch a.provider {
+        case .claude: try await Claude.useReset(token)
+        case .codex: try await Codex.useReset(token, accountId: id)
+        case .openrouter: throw ProviderError.other("OpenRouter keys don't bank limit resets")
+        }
         return acct
     }
 
-    static func codexAuth(_ a: inout Account, borrowed: Family?, now: Date) async throws -> (token: String, accountId: String?) {
+    static func login(_ a: inout Account, borrowed: Family?, now: Date) async throws -> (token: String, accountId: String?) {
         if a.source == .tool {
             guard let f = borrowed else { throw ProviderError.auth("no tool on this Mac holds it") }
             return (f.access, f.accountId)
@@ -354,8 +408,9 @@ enum Fetcher {
                 a.expiresAt = (jwtClaims(r.access)["exp"] as? Double).map { Date(timeIntervalSince1970: $0) }
             case .openrouter: break
             }
-            log("refreshed \(a.provider.rawValue) \(a.label)")
+            Events.record(.refresh, "refreshed \(a.provider.name) login", account: a)
         } catch {
+            Events.record(.refresh, "\(a.provider.name) login refresh", failure: error, account: a)
             throw ProviderError.auth("sign in again (\(error))")
         }
     }

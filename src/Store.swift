@@ -143,6 +143,10 @@ final class Store: ObservableObject {
             var u = u
             let old = usage[a.id]
             olds[a.id] = old
+            if u.error != old?.error {
+                if let e = u.error { Events.record(.fetch, u.needsAuth == true ? "needs sign-in" : "usage fetch failed", error: e, account: a) }
+                else { Events.record(.fetch, "usage fetch recovered", account: a) }
+            }
             if u.error != nil, u.needsAuth != true, let old, old.hasData {
                 let err = u.error
                 u = old; u.error = err
@@ -187,19 +191,24 @@ final class Store: ObservableObject {
                 acct = try await Fetcher.useReset(a, borrowed: borrowed(a, now: Date()))
             } catch {
                 resetFailure[a.id] = (error as? ProviderError)?.description ?? error.localizedDescription
+                Events.record(.reset, "use a banked reset", failure: error, account: a)
                 resetting.remove(a.id)
                 return
             }
             adopt(acct)
+            Events.record(.reset, "used a banked reset", account: a)
             let now = Date()
             var u = usage[a.id] ?? Usage(accountId: a.id, fetchedAt: now)
+            let clears = u.resetNext?.clears
             u.windows = u.windows.map { w in
+                guard clears?.contains(w.kind) ?? true else { return w }
                 var w = w
                 w.percent = 0
                 if let l = w.length { w.resetsAt = now.addingTimeInterval(l) }
                 return w
             }
             u.resetCredits = max(0, (u.resetCredits ?? 1) - 1)
+            u.resetNext = nil
             usage[a.id] = u
             resetGuard[a.id] = (now.addingTimeInterval(60), u.resetCredits ?? 0)
             resetting.remove(a.id)
@@ -269,7 +278,7 @@ final class Store: ObservableObject {
         fired.insert(a.key)
         if fired.count > 500 { fired = Set(fired.suffix(300)) }
         JSON.save(Array(fired), Paths.fired)
-        log("alert \(a.kind.rawValue): \(a.title)")
+        Events.record(.alert, a.title, account: accounts.first { $0.id == a.accountId })
         if let line = try? JSONEncoder.compact.encode(a), let h = try? FileHandle(forWritingTo: Paths.alerts) {
             h.seekToEndOfFile(); h.write(line + Data("\n".utf8)); try? h.close()
         } else if let line = try? JSONEncoder.compact.encode(a) {
@@ -307,6 +316,7 @@ final class Store: ObservableObject {
     func add(_ a: Account) throws {
         accounts = try Accounts.adding(a, to: accounts)
         save()
+        Events.record(.signIn, "added\(a.email.map { " \($0)" } ?? "")", account: a)
         Task { await refresh() }
     }
 
@@ -318,6 +328,7 @@ final class Store: ObservableObject {
 
     func remove(_ id: String) {
         guard let i = accounts.firstIndex(where: { $0.id == id }) else { return }
+        Events.record(.account, "removed", account: accounts[i])
         let k = accounts[i].key
         if Self.discovered(accounts[i]) {
             accounts[i].hidden = true
@@ -339,13 +350,21 @@ final class Store: ObservableObject {
 
     func restore(_ id: String) {
         update(id) { $0.hidden = false }
+        Events.record(.account, "shown", account: accounts.first { $0.id == id })
         Task { await refresh() }
     }
 
     func hide(_ id: String) {
         update(id) { $0.hidden = true }
+        Events.record(.account, "hidden", account: accounts.first { $0.id == id })
         usage[id] = nil
         JSON.save(Array(usage.values), Paths.usage)
+    }
+
+    func rename(_ id: String, to label: String) {
+        guard let old = accounts.first(where: { $0.id == id })?.label, old != label else { return }
+        update(id) { $0.label = label }
+        Events.record(.account, "renamed from \(old)", account: accounts.first { $0.id == id })
     }
 
     func shift(_ id: String, by d: Int) {

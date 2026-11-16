@@ -10,12 +10,16 @@ enum Main {
         switch cmd {
         case "run": App.run()
         case "status": CLI.status(args)
-        case "list": CLI.list()
+        case "list": CLI.list(args)
         case "where": CLI.whereNow(args)
         case "switch": CLI.switchTool(args)
         case "add": CLI.add(args)
         case "rename": CLI.rename(args)
         case "remove", "rm": CLI.remove(args)
+        case "hide": CLI.setHidden(args, true)
+        case "show": CLI.setHidden(args, false)
+        case "reset": CLI.reset(args)
+        case "log", "events": CLI.events(args)
         case "alerts": CLI.alerts(args)
         case "snapshot": Snapshot.run(args)
         case "install": Agent.install()
@@ -40,6 +44,7 @@ final class App: NSObject, NSApplicationDelegate {
 
     static func run() {
         Paths.ensure()
+        Events.via = "app"
         guard Lock.acquire() else {
             print("brim is already running (pid \(Lock.holder() ?? "?"))")
             exit(0)
@@ -55,7 +60,8 @@ final class App: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ n: Notification) {
-        log("start \(VERSION)")
+        Events.trim()
+        Events.record(.app, "started \(VERSION)")
         notch = NotchController(store: store)
         notch.onSettings = { [weak self] in self?.openSettings() }
         notch.onAdd = { [weak self] p in self?.signIn(p) }
@@ -78,7 +84,6 @@ final class App: NSObject, NSApplicationDelegate {
         store.schedule()
         notch.place()
         Task { await store.refresh() }
-        log("reloaded")
     }
 
     func signIn(_ p: Provider) {
@@ -90,6 +95,7 @@ final class App: NSObject, NSApplicationDelegate {
                 try store.add(a)
                 store.show(Flash(text: "Added \(a.label)\(a.email.map { " · \($0)" } ?? "")", provider: p, tone: .accent))
             } catch {
+                Events.record(.signIn, "\(p.name) sign-in", failure: error)
                 store.show(Flash(text: "\(p.name) sign-in: \(error)", provider: p, tone: .warn), seconds: 8)
             }
         }
@@ -116,6 +122,7 @@ final class App: NSObject, NSApplicationDelegate {
                 try store.add(a)
                 store.show(Flash(text: "Added \(a.label)", provider: .openrouter, tone: .accent))
             } catch {
+                Events.record(.signIn, "OpenRouter key", failure: error)
                 store.show(Flash(text: "OpenRouter key: \(error)", provider: .openrouter, tone: .warn), seconds: 8)
             }
         }
@@ -139,7 +146,7 @@ final class App: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ n: Notification) {
         store.save()
-        log("stop")
+        Events.record(.app, "stopped")
     }
 }
 

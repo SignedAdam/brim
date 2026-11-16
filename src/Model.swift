@@ -1,6 +1,6 @@
 import Foundation
 
-let VERSION = "0.4.0"
+let VERSION = "0.5.0"
 
 enum Provider: String, Codable, CaseIterable {
     case claude, codex, openrouter
@@ -9,6 +9,14 @@ enum Provider: String, Codable, CaseIterable {
         switch self {
         case .claude: return "Claude"
         case .codex: return "Codex"
+        case .openrouter: return "OpenRouter"
+        }
+    }
+
+    var company: String {
+        switch self {
+        case .claude: return "Anthropic"
+        case .codex: return "OpenAI"
         case .openrouter: return "OpenRouter"
         }
     }
@@ -122,20 +130,38 @@ struct Balance: Codable, Equatable {
     }
 }
 
+struct ResetGrant: Codable, Equatable {
+    var label: String
+    var clears: [UsageWindow.Kind]
+}
+
 struct Usage: Codable, Equatable {
     var accountId: String
     var fetchedAt: Date
     var windows: [UsageWindow] = []
     var plan: String?
     var resetCredits: Int?
+    var resetNext: ResetGrant?
     var balance: Balance?
     var error: String?
     var needsAuth: Bool?
 
     var session: UsageWindow? { windows.first { $0.kind == .session } }
     var weekly: UsageWindow? { windows.first { $0.kind == .weekly } }
+    var lead: UsageWindow? { windows.first { $0.kind == .model } ?? session }
     var peak: Double { (windows.map(\.percent) + [balance?.usedPercent].compactMap { $0 }).max() ?? 0 }
     var hasData: Bool { !windows.isEmpty || balance != nil }
+
+    var resetClears: String {
+        let names = (resetNext?.clears ?? [.session, .weekly]).flatMap { k -> [String] in
+            switch k {
+            case .session: return ["Session"]
+            case .weekly: return ["Week"]
+            case .model: return windows.filter { $0.kind == .model }.map(\.label)
+            }
+        }
+        return names.isEmpty ? "the limits" : ListFormatter.localizedString(byJoining: names)
+    }
 }
 
 struct Settings: Codable, Equatable {
@@ -302,7 +328,7 @@ enum Paths {
     static var fired: URL { home.appendingPathComponent("fired.json") }
     static var socket: URL { home.appendingPathComponent("brim.sock") }
     static var lock: URL { home.appendingPathComponent("brim.lock") }
-    static var log: URL { home.appendingPathComponent("brim.log") }
+    static var events: URL { home.appendingPathComponent("events.jsonl") }
     static var vault: URL { home.appendingPathComponent("vault.json") }
     static var vaultLock: URL { home.appendingPathComponent("vault.lock") }
     static var backups: URL { home.appendingPathComponent("backups") }
@@ -367,16 +393,6 @@ enum JSON {
             throw ProviderError.other("can't write \(tmp.path)")
         }
         _ = try FileManager.default.replaceItemAt(url, withItemAt: tmp)
-    }
-}
-
-func log(_ s: String) {
-    Paths.ensure()
-    let line = "\(ISO8601DateFormatter().string(from: Date())) \(s)\n"
-    if let h = try? FileHandle(forWritingTo: Paths.log) {
-        h.seekToEndOfFile(); h.write(line.data(using: .utf8)!); try? h.close()
-    } else {
-        FileManager.default.createFile(atPath: Paths.log.path, contents: line.data(using: .utf8))
     }
 }
 

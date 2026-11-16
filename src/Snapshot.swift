@@ -62,21 +62,23 @@ enum Snapshot {
         let now = sampleNow
         func w(_ k: UsageWindow.Kind, _ pct: Double, _ resetIn: TimeInterval) -> UsageWindow {
             let len: TimeInterval = k == .session ? 5 * 3600 : 7 * 86400
-            return UsageWindow(kind: k, label: k == .session ? "Session" : "Week", percent: pct,
+            return UsageWindow(kind: k, label: k == .session ? "Session" : k == .weekly ? "Week" : "Fable", percent: pct,
                                resetsAt: now.addingTimeInterval(resetIn), length: len)
         }
         let rows: [(String, Provider, String, Double, TimeInterval, Double, TimeInterval, Int?)] = [
-            ("Personal", .claude, "default_claude_max_20x", 17, 2 * 3600 + 14 * 60, 21, 1.8 * 86400, nil),
-            ("Studio", .claude, "default_claude_max_5x", 64, 3 * 3600 + 40 * 60, 48, 4.2 * 86400, nil),
+            ("Personal", .claude, "default_claude_max_20x", 17, 1.8 * 86400, 21, 1.8 * 86400, nil),
+            ("Studio", .claude, "default_claude_max_5x", 64, 4.2 * 86400, 48, 4.2 * 86400, nil),
             ("ChatGPT", .codex, "promax", 7, 8 * 60, 34, 5.3 * 86400, 2),
-            ("Auernet", .claude, "claude_team", 88, 52 * 60, 71, 2.6 * 86400, nil),
+            ("Auernet", .claude, "claude_team", 88, 2.6 * 86400, 71, 2.6 * 86400, nil),
             ("Auernet GPT", .codex, "team", 100, 37 * 60, 55, 3.1 * 86400, nil),
         ]
         for (i, r) in rows.enumerated() {
             let id = "sample-\(i)"
             s.accounts.append(Account(id: id, provider: r.1, source: .signIn, label: r.0, plan: r.2, remoteId: id))
+            var windows = [w(r.1 == .claude ? .model : .session, r.3, r.4), w(.weekly, r.5, r.6)]
+            if r.0 == "Auernet" { windows.append(w(.session, 42, 52 * 60)) }
             s.usage[id] = Usage(accountId: id, fetchedAt: now.addingTimeInterval(-50),
-                                windows: [w(.session, r.3, r.4), w(.weekly, r.5, r.6)], plan: r.2, resetCredits: r.7)
+                                windows: windows, plan: r.2, resetCredits: r.7)
         }
         func hold(_ t: Tool, _ p: Provider, _ i: Int, dead: String? = nil) -> Holding {
             let f = Family(provider: p, access: "sample-\(t.rawValue)-\(i)", accountId: "sample-\(i)")

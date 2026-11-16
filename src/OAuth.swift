@@ -152,8 +152,7 @@ enum SignIn {
 
     static func present(_ url: URL, open: Bool) {
         if open { NSWorkspace.shared.open(url); return }
-        print(url.absoluteString)
-        fflush(stdout)
+        CLI.say(url.absoluteString)
     }
 
     static func family(_ provider: Provider, longLived: Bool = false, open: Bool = true) async throws -> Family {

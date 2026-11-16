@@ -177,7 +177,7 @@ struct NotchView: View {
             } else {
                 HStack(spacing: 0) {
                     Spacer()
-                    ColumnLabel("Session").frame(width: Row.meterWidth, alignment: .leading)
+                    ColumnLabel(leadLabel).frame(width: Row.meterWidth, alignment: .leading)
                     ColumnLabel("Week").frame(width: Row.meterWidth, alignment: .leading).padding(.leading, Row.gap)
                 }
                 .padding(.horizontal, 16)
@@ -213,6 +213,14 @@ struct NotchView: View {
         guard let latest else { return "" }
         let s = store.now.timeIntervalSince(latest)
         return s < 60 ? "updated just now" : "updated \(Fmt.duration(s)) ago"
+    }
+
+    private var leadLabel: String {
+        var labels: [String] = []
+        for a in rows {
+            if let l = store.usage[a.id]?.lead?.label, !labels.contains(l) { labels.append(l) }
+        }
+        return labels.isEmpty ? "Session" : labels.joined(separator: " / ")
     }
 }
 
@@ -364,7 +372,7 @@ struct Row: View {
                     HStack(spacing: 5) {
                         Text(account.label).font(Theme.ui(12.5, .semibold)).foregroundStyle(Theme.text).lineLimit(1).layoutPriority(1)
                         if let c = usage?.resetCredits, c > 0 {
-                            ResetCredits(count: c, busy: resetting, failure: resetFailure, onUse: onReset)
+                            ResetCredits(count: c, about: resetAbout(c), busy: resetting, failure: resetFailure, onUse: onReset)
                         }
                     }
                     Text(subtitle).font(Theme.ui(10)).foregroundStyle(Theme.faint).lineLimit(1)
@@ -381,7 +389,7 @@ struct Row: View {
                 Spend(today: usage?.balance?.today, week: usage?.balance?.week).frame(width: Self.meterWidth)
                 BalanceMeter(balance: usage?.balance, low: lowBalance).frame(width: Self.meterWidth).padding(.leading, Self.gap)
             } else {
-                Meter(window: usage?.session, now: now, tint: Theme.brand(account.provider)).frame(width: Self.meterWidth)
+                Meter(window: usage?.lead, now: now, tint: Theme.brand(account.provider)).frame(width: Self.meterWidth)
                 Meter(window: usage?.weekly, now: now, tint: Theme.brand(account.provider)).frame(width: Self.meterWidth).padding(.leading, Self.gap)
             }
         }
@@ -391,15 +399,24 @@ struct Row: View {
         var parts: [String] = []
         if account.provider == .openrouter { parts.append("Credits") }
         if let p = Fmt.plan(account.plan ?? usage?.plan, account.provider) { parts.append(p) }
-        if let m = usage?.windows.first(where: { $0.kind == .model && $0.percent >= 40 }) { parts.append("\(m.label) \(Int(m.percent))%") }
+        let lead = usage?.lead
+        if let s = usage?.session, s.id != lead?.id { parts.append("Session \(Int(s.percent))%") }
+        if let m = usage?.windows.first(where: { $0.kind == .model && $0.id != lead?.id && $0.percent >= 40 }) { parts.append("\(m.label) \(Int(m.percent))%") }
         if parts.isEmpty { parts.append(account.provider.name) }
         if usage?.error != nil, usage?.needsAuth != true, !(usage?.windows.isEmpty ?? true) { parts.append("stale") }
         return parts.joined(separator: " · ")
+    }
+
+    private func resetAbout(_ c: Int) -> String {
+        let banked = "\(c) limit reset\(c == 1 ? "" : "s") banked with \(account.provider.company)"
+        guard let u = usage, let g = u.resetNext else { return banked + ". Hold to use one" }
+        return banked + ". Hold to use the next one, \(g.label), which clears \(u.resetClears)"
     }
 }
 
 struct ResetCredits: View {
     let count: Int
+    let about: String
     let busy: Bool
     let failure: String?
     let onUse: () -> Void
@@ -434,8 +451,7 @@ struct ResetCredits: View {
             guard f != nil else { return }
             Task { try? await Task.sleep(for: .seconds(2)); failed = false }
         }
-        .help(failure.map { "Reset failed: \($0). Hold to try again" }
-              ?? "\(count) limit reset\(count == 1 ? "" : "s") banked with OpenAI. Hold to use one")
+        .help(failure.map { "Reset failed: \($0). Hold to try again" } ?? about)
     }
 
     private var wording: String {

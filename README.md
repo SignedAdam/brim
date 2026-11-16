@@ -10,14 +10,14 @@ Closed, it's a sliver either side of the camera: one hairline per account on the
 
 Past 6 accounts, Settings can split the closed notch into a Claude column and a Codex column and leave out used-up accounts; a checkbox per account hides it everywhere until you check it again.
 
-Hover the notch and it opens: every account's 5-hour session and weekly limit, how far through each window you are (the tick), and a countdown to each reset. On a screen without a notch it becomes a small pill in the menu bar.
+Hover the notch and it opens: every account's weekly limit next to Claude's Fable limit or ChatGPT's 5-hour session (a Claude account that still has a 5-hour session shows it under its name), how far through each window you are (the tick), and a countdown to each reset. On a screen without a notch it becomes a small pill in the menu bar.
 
 - **Claude** and **ChatGPT / Codex**, as many accounts of each as you like. Every account Claude Code, Codex, Hermes Agent or OMP is signed in to on this Mac is picked up automatically; add others with a browser sign-in.
 - **Account switching**: each row shows the tools signed in as that account. Hover a row and the other tools appear dim; click one to sign that tool in as this account. The login it had is parked in Brim and kept fresh, so switching back needs no new sign-in.
-- **Banked resets**: a ChatGPT account with resets banked shows "2 resets" next to its name. Press and hold it to use one; letting go early cancels.
+- **Banked resets**: a Claude or ChatGPT account with limit resets banked shows "2 resets" next to its name. Press and hold it to use one; letting go early cancels. Claude spends its resets in Anthropic's order, and the tooltip names the next one and the limits it clears.
 - **OpenRouter**: credit left and today's spend. A key in `$OPENROUTER_API_KEY` (or `~/.config/secrets/global.env`) is picked up by name, never copied; or add one with **Add OpenRouter Key…** / `brim add openrouter`.
 - **Alerts** at thresholds you pick, when a balance runs low, when unused weekly quota is about to expire, when a limit resets, and when OpenAI or Anthropic announce a reset in public ([resets.albastov.com](https://resets.albastov.com)).
-- **Agent-friendly**: `brim status --json`, plus hooks that get every alert as JSON, so an agent can spend leftover quota or pause heavy work.
+- **Agent-friendly**: `brim status --json`, `brim switch`, an event log (`brim log`), plus hooks that get every alert as JSON, so an agent can spend leftover quota or pause heavy work.
 
 ## Install
 
@@ -38,15 +38,22 @@ make install        # builds Brim.app into /Applications, puts brim on your PATH
 ## Command line
 
 ```
-brim status [--json] [--fresh]    usage per account
+brim status [<account>…] [--json] [--fresh]   usage per account, or just the ones named
+brim list [--json]                accounts, the tools holding each, and the logins parked
+brim where [--json]               what each tool is signed in as, and what Brim has parked
+brim switch <account> <tool>…|all tool: claude-code, codex, hermes, omp; all = every tool here
+                                  that takes it (--no-open prints the link, --json the result)
+brim reset <account> [--yes]      use a banked Claude or ChatGPT limit reset (asks first; can't be undone)
+brim log [-f] [--kind K,…]        what Brim did: switches, sign-ins, token refreshes, fetch
+         [--account A] [--since 2h]  errors, resets, alerts. --kind error: failures only
 brim add claude|codex             sign in to another account (--no-open prints the link)
 brim add openrouter [--env VAR]   add an OpenRouter key (stdin, or by env var name)
-brim list | rename | remove       manage accounts
-brim where [--json]               what each tool is signed in as, and what Brim has parked
-brim switch <account> <tool>      tool: claude-code, codex, hermes, omp (--no-open prints the link)
+brim rename | hide | show | remove   manage accounts
 brim alerts                       recent alerts, JSON lines
 brim quit
 ```
+
+`<account>` is a label, an email or an id prefix. A label two accounts share, like a Claude and a ChatGPT account both called "adam", means both: `brim switch adam all` signs every Claude tool in as the Claude one and Codex as the ChatGPT one. Commands print JSON when their output isn't a terminal. The event log is `~/.brim/events.jsonl`, one JSON object per line, written by the app and the command line.
 
 Agents: see [AGENTS.md](AGENTS.md) for reading limits, switching, and finishing a sign-in for the user.
 
