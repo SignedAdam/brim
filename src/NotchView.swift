@@ -82,6 +82,7 @@ struct NotchView: View {
     @ObservedObject var model: NotchModel
     var onSettings: () -> Void = {}
     var onAdd: (Provider) -> Void = { _ in }
+    var onSignIn: (Account) -> Void = { _ in }
 
     private var rows: [Account] { store.visible }
     private var flashing: Bool { store.flash != nil && !model.open }
@@ -186,7 +187,7 @@ struct NotchView: View {
                     Row(account: a, usage: store.usage[a.id], now: store.now, lowBalance: store.settings.lowBalance,
                         chips: store.chips(a), hovering: model.hoveredRow == a.id,
                         resetting: store.resetting.contains(a.id), resetFailure: store.resetFailure[a.id],
-                        onSwitch: { store.switchTool($0, to: a) }, onReset: { store.useReset(a) })
+                        onSwitch: { store.switchTool($0, to: a) }, onReset: { store.useReset(a) }, onSignIn: { onSignIn(a) })
                         .frame(height: NotchModel.rowHeight)
                         .padding(.horizontal, 16)
                         .contentShape(Rectangle())
@@ -360,6 +361,8 @@ struct Row: View {
     var resetFailure: String?
     var onSwitch: (Tool) -> Void = { _ in }
     var onReset: () -> Void = {}
+    var onSignIn: () -> Void = {}
+    @State private var linkHover = false
 
     static let meterWidth: CGFloat = 100
     static let gap: CGFloat = 16
@@ -381,9 +384,13 @@ struct Row: View {
                 ToolChips(chips: chips, hovering: hovering, onSwitch: onSwitch).padding(.trailing, 10).layoutPriority(2)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            if let u = usage, u.needsAuth == true || (!u.hasData && u.error != nil) {
-                Text(u.needsAuth == true ? (account.source == .apiKey ? "Key rejected" : "Sign in again") : (u.error ?? ""))
-                    .font(Theme.ui(11)).foregroundStyle(Theme.warn).lineLimit(1)
+            if let u = usage, u.needsAuth == true, account.source != .apiKey {
+                link("Sign in again", help: "Sign in to \(account.provider.name) as \(account.email ?? account.label)", action: onSignIn)
+            } else if let u = usage, !u.hasData, let e = u.error, let pay = u.payURL.flatMap(URL.init(string:)) {
+                link(e, help: "Open \(pay.host ?? "billing") to pay") { NSWorkspace.shared.open(pay) }
+            } else if let u = usage, u.needsAuth == true || (!u.hasData && u.error != nil) {
+                Text(u.needsAuth == true ? "Key rejected" : (u.error ?? ""))
+                    .font(Theme.ui(11)).foregroundStyle(Theme.warn).lineLimit(1).help(u.error ?? "")
                     .frame(width: 2 * Self.meterWidth + Self.gap, alignment: .leading)
             } else if account.provider == .openrouter {
                 Spend(today: usage?.balance?.today, week: usage?.balance?.week).frame(width: Self.meterWidth)
@@ -393,6 +400,16 @@ struct Row: View {
                 Meter(window: usage?.weekly, now: now, tint: Theme.brand(account.provider)).frame(width: Self.meterWidth).padding(.leading, Self.gap)
             }
         }
+    }
+
+    private func link(_ text: String, help: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(text).font(Theme.ui(11)).foregroundStyle(Theme.warn).underline(linkHover).lineLimit(1)
+        }
+        .buttonStyle(.plain)
+        .onHover { linkHover = $0 }
+        .help(help)
+        .frame(width: 2 * Self.meterWidth + Self.gap, alignment: .leading)
     }
 
     private var subtitle: String {

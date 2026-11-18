@@ -65,6 +65,7 @@ final class App: NSObject, NSApplicationDelegate {
         notch = NotchController(store: store)
         notch.onSettings = { [weak self] in self?.openSettings() }
         notch.onAdd = { [weak self] p in self?.signIn(p) }
+        notch.onSignIn = { [weak self] a in self?.signIn(a.provider, as: a) }
         store.start()
         notch.show()
         for (sig, f) in [(SIGTERM, { NSApp.terminate(nil) }), (SIGINT, { NSApp.terminate(nil) }),
@@ -86,14 +87,17 @@ final class App: NSObject, NSApplicationDelegate {
         Task { await store.refresh() }
     }
 
-    func signIn(_ p: Provider) {
+    func signIn(_ p: Provider, as old: Account? = nil) {
         if p == .openrouter { return addKey() }
-        store.show(Flash(text: "Finish signing in to \(p.name) in your browser", provider: p), seconds: 30)
+        store.show(Flash(text: "Finish signing in to \(p.name)\(old.map { " as \($0.email ?? $0.label)" } ?? "") in your browser", provider: p), seconds: 30)
         Task {
             do {
                 let a = try await SignIn.run(p, label: nil)
+                if let k = old?.key, a.key != k {
+                    throw ProviderError.other("the browser signed in as \(a.email ?? "another account"), not \(old?.label ?? "")")
+                }
                 try store.add(a)
-                store.show(Flash(text: "Added \(a.label)\(a.email.map { " · \($0)" } ?? "")", provider: p, tone: .accent))
+                store.show(Flash(text: "\(old == nil ? "Added" : "Signed in") \(old?.label ?? a.label)\(a.email.map { " · \($0)" } ?? "")", provider: p, tone: .accent))
             } catch {
                 Events.record(.signIn, "\(p.name) sign-in", failure: error)
                 store.show(Flash(text: "\(p.name) sign-in: \(error)", provider: p, tone: .warn), seconds: 8)

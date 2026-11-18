@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.6.0
+
+- "Sign in again" on an account whose login expired is now a link: click it to sign in as that account in the browser. Brim keeps the account's label and settings, and refuses a sign-in as a different account. Adding an account that Brim already tracks also refreshes its login instead of failing with "already tracked".
+- A Claude account whose subscription isn't active shows Anthropic's status, such as "Subscription past due", instead of the rate-limit error Anthropic returns for it. When Anthropic has an invoice to pay, click the status to open it on claude.ai.
+- Errors from Anthropic and OpenAI show their message, such as "HTTP 429: Rate limited. Please try again later.", instead of the raw JSON. Hover an error in the notch to read it in full.
+
 ## 0.5.0
 
 - `brim log`: what Brim did and what went wrong, from the app and the command line: switches (with the account the tool had before), failed switches and sign-ins, accounts added, renamed, hidden or removed, token refreshes, usage fetch errors and recoveries, parked logins that can't be refreshed, resets used, and alerts. Filter with `--kind`, `--kind error`, `--account` and `--since`; `-f` keeps printing new events. It's `~/.brim/events.jsonl` and replaces the free-text `brim.log`.

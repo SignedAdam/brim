@@ -43,6 +43,7 @@ final class NotchController {
     private var closeTimer: Timer?
     var onSettings: () -> Void = {}
     var onAdd: (Provider) -> Void = { _ in }
+    var onSignIn: (Account) -> Void = { _ in }
 
     static let canvas = CGSize(width: 640, height: 480)
 
@@ -52,7 +53,8 @@ final class NotchController {
 
     func show() {
         let root = NotchView(store: store, model: model, onSettings: { [weak self] in self?.settings() },
-                             onAdd: { [weak self] p in self?.collapse(); self?.onAdd(p) })
+                             onAdd: { [weak self] p in self?.collapse(); self?.onAdd(p) },
+                             onSignIn: { [weak self] a in self?.collapse(); self?.onSignIn(a) })
         let host = FirstMouseHost(rootView: root)
         host.frame = NSRect(origin: .zero, size: Self.canvas)
         panel.contentView = host

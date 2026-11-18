@@ -1,13 +1,23 @@
 import Foundation
 
 enum ProviderError: Error, CustomStringConvertible {
-    case auth(String), http(Int, String), other(String)
+    case auth(String), http(Int, String), other(String), subscription(String, pay: String?)
     var description: String {
         switch self {
         case .auth(let s): return s
-        case .http(let c, let s): return "HTTP \(c)\(s.isEmpty ? "" : ": \(s)")"
+        case .http(let c, let s): return "HTTP \(c)" + (Self.message(s).map { ": \($0)" } ?? "")
         case .other(let s): return s
+        case .subscription(let s, _): return "Subscription \(s.replacingOccurrences(of: "_", with: " "))"
         }
+    }
+
+    static func message(_ body: String) -> String? {
+        let body = body.trimmingCharacters(in: .whitespacesAndNewlines)
+        let o = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any]
+        let e = o?["error"] as? [String: Any]
+        let m = e?["message"] as? String ?? o?["error_description"] as? String ?? o?["detail"] as? String
+            ?? o?["message"] as? String ?? o?["error"] as? String ?? (o == nil && !body.hasPrefix("<") ? body : nil)
+        return m.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.flatMap { $0.isEmpty ? nil : String($0.prefix(200)) }
     }
 }
 
@@ -23,7 +33,7 @@ enum HTTP {
         let (data, resp) = try await session.data(for: req)
         let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
         guard code == 200 else {
-            let body = String(data: data.prefix(200), encoding: .utf8) ?? ""
+            let body = String(decoding: data.prefix(2000), as: UTF8.self)
             if code == 401 || code == 403 { throw ProviderError.auth("signed out (\(code))") }
             throw ProviderError.http(code, body.replacingOccurrences(of: "\n", with: " "))
         }
@@ -92,16 +102,24 @@ enum Claude {
         return r
     }
 
-    static func profile(_ token: String) async throws -> (id: String?, email: String?, name: String?, plan: String?) {
+    static func profile(_ token: String) async throws -> (id: String?, email: String?, name: String?, plan: String?, status: String?, pay: String?) {
         let o = try await HTTP.json(request("profile", token))
         let acct = o["account"] as? [String: Any] ?? [:]
         let org = o["organization"] as? [String: Any] ?? [:]
         return (acct["uuid"] as? String, acct["email"] as? String ?? acct["email_address"] as? String,
-                acct["display_name"] as? String, org["rate_limit_tier"] as? String ?? org["organization_type"] as? String)
+                acct["display_name"] as? String, org["rate_limit_tier"] as? String ?? org["organization_type"] as? String,
+                org["subscription_status"] as? String, org["payment_auth_hosted_invoice_url"] as? String)
     }
 
     static func usage(_ token: String) async throws -> [String: Any] {
-        try await HTTP.json(request("usage?cedar_ember=1", token))
+        do {
+            return try await HTTP.json(request("usage?cedar_ember=1", token))
+        } catch ProviderError.http(let code, let body) {
+            if let p = try? await profile(token), let s = p.status, s != "active" {
+                throw ProviderError.subscription(s, pay: p.pay.flatMap { URL(string: $0)?.scheme == "https" ? $0 : nil })
+            }
+            throw ProviderError.http(code, body)
+        }
     }
 
     static func resets(_ o: [String: Any]) -> (count: Int, next: ResetGrant?)? {
@@ -364,6 +382,7 @@ enum Fetcher {
         } catch let e as ProviderError {
             u.error = e.description
             if case .auth = e { u.needsAuth = true }
+            if case .subscription(_, let pay) = e { u.payURL = pay }
         } catch {
             u.error = (error as NSError).localizedDescription
         }

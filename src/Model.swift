@@ -1,6 +1,6 @@
 import Foundation
 
-let VERSION = "0.5.0"
+let VERSION = "0.6.0"
 
 enum Provider: String, Codable, CaseIterable {
     case claude, codex, openrouter
@@ -75,14 +75,14 @@ enum Accounts {
 
     static func adding(_ a: Account, to list: [Account]) throws -> [Account] {
         var list = list
-        if let r = a.remoteId, let dup = list.first(where: { $0.provider == a.provider && $0.remoteId == r && $0.source != .tool && !$0.isHidden }) {
-            throw ProviderError.other("already tracked as \(dup.label)")
-        }
         if let k = a.key, let i = list.firstIndex(where: { $0.key == k }) {
             var n = a
-            if list[i].source == .tool { n.id = list[i].id; n.label = list[i].label }
+            (n.id, n.label) = (list[i].id, list[i].label)
             list[i] = n
             return list
+        }
+        if let r = a.remoteId, let dup = list.first(where: { $0.provider == a.provider && $0.remoteId == r && $0.source != .tool && !$0.isHidden }) {
+            throw ProviderError.other("already tracked as \(dup.label)")
         }
         list.append(a)
         return list
@@ -145,6 +145,7 @@ struct Usage: Codable, Equatable {
     var balance: Balance?
     var error: String?
     var needsAuth: Bool?
+    var payURL: String?
 
     var session: UsageWindow? { windows.first { $0.kind == .session } }
     var weekly: UsageWindow? { windows.first { $0.kind == .weekly } }
